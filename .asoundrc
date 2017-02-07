@@ -1,0 +1,29 @@
+pcm.loophw00 {
+  type hw
+  card Loopback
+  device 0
+  subdevice 0
+  format S32_LE
+  rate 48000
+  channels 8
+}
+
+pcm.loophw01 {
+  type hw
+  card Loopback
+  device 1
+  subdevice 0
+  format S32_LE
+  rate 48000
+  channels 8
+}
+
+pcm.aduplex {
+  type asym
+  playback.pcm "loophw00"
+  capture.pcm "loophw01"
+  hint {
+       show on
+       description "Duplex Loopback"
+  }
+}
