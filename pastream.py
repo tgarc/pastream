@@ -32,6 +32,8 @@ import traceback
 
 TXQSIZE = 1<<16 # Number of frames to buffer for transmission
 
+class AudioBufferError(Exception):
+    pass
 
 # TODO
 # Replace Queue with a portaudio ring buffer in order to allow variable block
@@ -103,7 +105,7 @@ class QueuedStreamBase(sd._StreamBase):
     def icallback(self, in_data, frame_count, time_info, status):
         self.status |= status
         if status._flags&0xF:
-            self._set_exception(sd.PortAudioError(str(status)))
+            self._set_exception(AudioBufferError(str(status)))
             raise sd.CallbackAbort
 
         try:
@@ -117,7 +119,7 @@ class QueuedStreamBase(sd._StreamBase):
     def ocallback(self, out_data, frame_count, time_info, status):
         self.status |= status
         if status._flags&0xF:
-            self._set_exception(sd.PortAudioError(str(status)))
+            self._set_exception(AudioBufferError(str(status)))
             raise sd.CallbackAbort
 
         try:
@@ -138,7 +140,7 @@ class QueuedStreamBase(sd._StreamBase):
     def iocallback(self, in_data, out_data, frame_count, time_info, status):
         self.status |= status
         if status._flags&0xF:
-            self._set_exception(sd.PortAudioError(str(status)))
+            self._set_exception(AudioBufferError(str(status)))
             raise sd.CallbackAbort
 
         try:
@@ -442,17 +444,22 @@ class SoundFileStream(SoundFileStreamBase):
                                               fileblocksize=fileblocksize,
                                               kind='duplex', **kwargs)
 
-def blockstream(inpf=None, blocksize=1024, overlap=0, always_2d=False, copy=False, **kwargs):
+def blockstream(inpf=None, blocksize=1024, overlap=0, always_2d=False, copy=False, qwriter=None, streamclass=None, **kwargs):
     import numpy as np
     assert blocksize is not None and blocksize > 0, "Requires a fixed known blocksize"
 
     incframes = blocksize-overlap
-    if inpf is None:
-        stream = QueuedStreamBase(kind='input', blocksize=incframes, **kwargs)
+    if inpf is None and qwriter is None:
+        if streamclass is None: 
+            streamclass = QueuedStreamBase
+            kwargs['kind'] = 'input'
+        stream = streamclass(blocksize=incframes, **kwargs)
         dtype = stream.dtype
         channels = stream.channels
     else:
-        stream = SoundFileStream(inpf=inpf, blocksize=incframes, **kwargs)
+        if streamclass is None: 
+            streamclass = SoundFileStream
+        stream = streamclass(inpf, blocksize=incframes, **kwargs)
         dtype = stream.dtype[0]
         channels = stream.channels[0]
 
@@ -623,3 +630,4 @@ def main(argv=None):
 
 if __name__ == '__main__':
     sys.exit(main())
+    
