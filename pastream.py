@@ -29,8 +29,11 @@ import sounddevice as sd
 import soundfile as sf
 import traceback
 
+__usage__ = "%(prog)s [options] [-d device] input output"
+
 
 TXQSIZE = 1<<16 # Number of frames to buffer for transmission
+
 
 class AudioBufferError(Exception):
     pass
@@ -441,7 +444,7 @@ class SoundFileStream(SoundFileStreamBase):
             raise ValueError("No input or output file given.")
 
         super(SoundFileStream, self).__init__(inpf=inpf, outf=outf, qsize=qsize,
-                                              fileblocksize=fileblocksize,
+                                              fileblocksize=fileblocksize, sfkwargs=sfkwargs,
                                               kind='duplex', **kwargs)
 
 def blockstream(inpf=None, blocksize=1024, overlap=0, always_2d=False, copy=False, qwriter=None, streamclass=None, **kwargs):
@@ -514,6 +517,7 @@ def get_parser(parser=None):
     if parser is None:
         parser = ArgumentParser(formatter_class=RawDescriptionHelpFormatter,
                                 fromfile_prefix_chars='@',
+                                usage=__usage__,
                                 description=__doc__)
         parser.convert_arg_line_to_args = lambda arg_line: arg_line.split()
 
@@ -538,6 +542,11 @@ Input audio file, or, use the special designator '-' for recording only.''')
     parser.add_argument("output", type=lambda x: None if x=='-' else x,
                         help='''\
 Output recording file, or, use the special designator '-' for playback only.''')
+
+    parser.add_argument("--loop", default=False, nargs='?', metavar='n', const=True, type=int,
+                        help='''\
+Replay the playback file n times. If no argument is specified, playback will
+loop infinitely. Does nothing if there is no playback.''')
 
     parser.add_argument("-l", action=ListStreamsAction, nargs=0,
                        help="List available audio device streams.")
@@ -630,4 +639,3 @@ def main(argv=None):
 
 if __name__ == '__main__':
     sys.exit(main())
-    
