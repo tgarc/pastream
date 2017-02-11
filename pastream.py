@@ -108,7 +108,7 @@ class QueuedStreamBase(sd._StreamBase):
             raise sd.CallbackAbort
 
         if self.rxq.write_available < frame_count:
-            self._set_exception(rtmixer.RingBuffer.Full("Receive queue is full."))
+            self._set_exception(AudioBufferError("Receive queue is full."))
             raise sd.CallbackAbort
 
         iframes = self.rxq.write(in_data, frame_count)
@@ -139,7 +139,7 @@ class QueuedStreamBase(sd._StreamBase):
             raise sd.CallbackAbort
 
         if self.rxq.write_available < frame_count:
-            self._set_exception(rtmixer.RingBuffer.Full("Receive queue is full."))
+            self._set_exception(AudioBufferError("Receive queue is full."))
             raise sd.CallbackAbort
 
         iframes = self.rxq.write(in_data, frame_count)
