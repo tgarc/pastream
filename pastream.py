@@ -90,14 +90,14 @@ class QueuedStreamBase(sd._StreamBase):
 
         if kind == 'duplex' or kind == 'output':
             self.txq = rtmixer.RingBuffer(self.framesize[1] if kind=='duplex' else self.framesize, qsize)
-            self.txq.not_full = threading.Event()
-            self.txq.not_full.set()
+            self.txq.event = threading.Event()
+            self.txq.event.set()
         else:
             self.txq = None
 
         if kind == 'duplex' or kind == 'input':
             self.rxq = rtmixer.RingBuffer(self.framesize[0] if kind=='duplex' else self.framesize, qsize)
-            self.rxq.not_empty = threading.Event()
+            self.rxq.event = threading.Event()
         else:
             self.rxq = None
 
@@ -112,7 +112,7 @@ class QueuedStreamBase(sd._StreamBase):
             raise sd.CallbackAbort
 
         iframes = self.rxq.write(in_data, frame_count)
-        self.rxq.not_empty.set()
+        self.rxq.event.set()
 
         self.frame_count += frame_count
 
@@ -123,7 +123,7 @@ class QueuedStreamBase(sd._StreamBase):
             raise sd.CallbackAbort
 
         oframes = self.txq.read(out_data, frame_count)
-        self.txq.not_full.set()
+        self.txq.event.set()
 
         # This is our last callback!
         if oframes < frame_count:
@@ -143,10 +143,10 @@ class QueuedStreamBase(sd._StreamBase):
             raise sd.CallbackAbort
 
         iframes = self.rxq.write(in_data, frame_count)
-        self.rxq.not_empty.set()
+        self.rxq.event.set()
 
         oframes = self.txq.read(out_data, frame_count)
-        self.txq.not_full.set()
+        self.txq.event.set()
 
         # This is our last callback!
         if oframes < frame_count:
@@ -163,16 +163,26 @@ class QueuedStreamBase(sd._StreamBase):
 
         if self.rxq is not None:
             self.rxq.flush()
-            self.rxq.not_empty.clear()
+            self.rxq.event.set()
 
         if self.txq is not None:
             self._exit.set()
             self.txq.flush()
-            self.txq.not_full.set()
+            self.txq.event.set()
 
     def abort(self):
         super(QueuedStreamBase, self).abort()
         self._closequeues()
+
+    def start(self):
+        if self.rxq is not None:
+            self.rxq.event.clear()
+        if self.txq is not None:
+            self.txq.event.set()
+            while self.txq.write_available:
+                time.sleep(0.001)
+            self.txq.event.clear()
+        super(QueuedStreamBase, self).start()
 
     def stop(self):
         super(QueuedStreamBase, self).stop()
@@ -201,6 +211,9 @@ class ThreadedStreamBase(QueuedStreamBase):
     in the main thread.
     """
     def __init__(self, blocksize=None, qreader=None, qwriter=None, kind='duplex', **kwargs):
+        if qreader is None and qwriter is None: 
+            raise ValueError("No qreader or qwriter function given.")
+
         super(ThreadedStreamBase, self).__init__(kind=kind, blocksize=blocksize, **kwargs)
 
         self._exit = threading.Event()
@@ -261,19 +274,19 @@ class ThreadedStreamBase(QueuedStreamBase):
     def _stopiothreads(self):
         currthread = threading.current_thread()
 
-        # if self.rxt is not None and self.rxt.is_alive() and self.rxt != currthread:
-        #     self.rxt.join()
+        if self.rxt is not None and self.rxt.is_alive() and self.rxt != currthread:
+            self.rxq.event.set()
+            self.rxt.join()
+            self.rxq.event.clear()
 
-        # if self.txt is not None and self.txt.is_alive() and self.txt != currthread:
-        #     self.txt.join()
+        if self.txt is not None and self.txt.is_alive() and self.txt != currthread:
+            self.txq.event.set()
+            self.txt.join()
+            self.txq.event.clear()
 
     def start(self):
         if self.txt is not None:
-            # Prime the buffer
             self.txt.start()
-            while self.txq.write_available and self.txt.is_alive():
-                time.sleep(0.001)
-
         if self.rxt is not None:
             self.rxt.start()
         super(ThreadedStreamBase, self).start()
@@ -303,12 +316,13 @@ def _soundfilewriter(stream, ringbuff):
     while True:
         nframes = ringbuff.read_available
         if nframes == 0: 
-            ringbuff.not_empty.clear()
+            ringbuff.event.clear()
 
-        if nframes or ringbuff.not_empty.wait():
+        if nframes or ringbuff.event.wait():
             nframes = min(ringbuff.read_available, stream.fileblocksize)
-            nframes = ringbuff.read(buff, nframes)
-            stream.out_fh.buffer_write(buff[:nframes*framesize], dtype=dtype)
+            if nframes > 0:
+                nframes = ringbuff.read(buff, nframes)
+                stream.out_fh.buffer_write(buff[:nframes*framesize], dtype=dtype)
 
         if nframes == 0:
             break
@@ -325,12 +339,13 @@ def _soundfilereader(stream, ringbuff):
     while not stream._exit.is_set():
         nframes = ringbuff.write_available
         if nframes == 0: 
-            ringbuff.not_full.clear()
+            ringbuff.event.clear()
 
-        if nframes or ringbuff.not_full.wait():
+        if nframes or ringbuff.event.wait():
             nframes = min(ringbuff.write_available, stream.fileblocksize)
-            nframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
-            nframes = ringbuff.write(buff, nframes)
+            if nframes > 0:
+                nframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
+                nframes = ringbuff.write(buff, nframes)
 
         if nframes == 0:
             break
@@ -451,7 +466,7 @@ class SoundFileStream(SoundFileStreamBase):
                                               fileblocksize=fileblocksize, sfkwargs=sfkwargs,
                                               kind='duplex', **kwargs)
 
-def blockstream(inpf=None, blocksize=1024, overlap=0, always_2d=False, copy=False, qwriter=None, streamclass=None, **kwargs):
+def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False, qwriter=None, streamclass=None, **kwargs):
     import numpy as np
     assert blocksize is not None and blocksize > 0, "Requires a fixed known blocksize"
 
@@ -470,22 +485,24 @@ def blockstream(inpf=None, blocksize=1024, overlap=0, always_2d=False, copy=Fals
         dtype = stream.dtype[0]
         channels = stream.channels[0]
 
-    rxqueue = stream.rxq
-
     if channels > 1:
         always_2d = True
 
-    inbuff = np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
+    rxqueue = stream.rxq
     outbuff = np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
     with stream:
         while stream.active:
-            item = rxqueue.get(inbuff, timeout=1)
-            rxbuff = np.frombuffer(item, dtype=dtype)
-            if always_2d:
-                rxbuff.shape = (len(rxbuff)//channels, channels)
-            outbuff[overlap:overlap+len(rxbuff)] = rxbuff
-
-            yield outbuff[:] if copy else outbuff
+            nframes = rxqueue.read_available
+            if nframes == 0: 
+                rxqueue.event.clear()
+            if nframes or rxqueue.event.wait():
+                nframes = min(rxqueue.read_available, blocksize)
+                if nframes > 0:
+                    nframes = rxqueue.read(outbuff[overlap:], nframes)
+            if nframes == 0:
+                break
+                
+            yield outbuff[:overlap+nframes].copy() if copy else outbuff[:overlap+nframes]
 
             outbuff[:-incframes] = outbuff[incframes:]
 
@@ -597,16 +614,21 @@ def main(argv=None):
     parser = get_parser()
     args = parser.parse_args(argv)
 
-    sfkwargs=dict(endian=args.endian, subtype=args.encoding, format=args.file_type)
+    sfkwargs=dict()
     stream = SoundFileStreamFactory(args.input, args.output, qsize=args.qsize,
-                                    sfkwargs=sfkwargs, device=args.device,
+                                    sfkwargs={
+                                        'endian': args.endian, 
+                                        'subtype': args.encoding, 
+                                        'format': args.file_type
+                                    },
+                                    device=args.device,
                                     dtype=args.dtype,
                                     fileblocksize=args.file_blocksize,
                                     samplerate=args.samplerate,
                                     blocksize=args.blocksize)
 
 
-    statline = "\r{:8.3f}s {:10d} frames processed, {:>10s} frames queued, {:>10s} frames received\r"
+    statline = "\r{:8.3f}s {:10d} frames processed, {:>10s} frames available, {:>10s} frames queued\r"
     print("<-", stream.inp_fh if stream.inp_fh is not None else 'null')
     print("--", stream)
     print("->", stream.out_fh if stream.out_fh is not None else 'null')
@@ -614,22 +636,24 @@ def main(argv=None):
     nullinp = nullout = None
     if stream.inp_fh is None:
         nullinp = 'n/a'
-    if stream.out_fh is None or not stream.out_fh.seekable:
+    if stream.out_fh is None:
         nullout = 'n/a'
     
     try:
-        with stream:
-            t1 = time.time()
-            while stream.active:
-                time.sleep(0.1)
-                line = statline.format(time.time()-t1, stream.frame_count, 
-                                       nullinp or str(stream.txq.write_available),
-                                       nullout or str(stream.rxq.read_available))
-                sys.stdout.write(line); sys.stdout.flush()
+        try:
+            with stream:
+                t1 = time.time()
+                while stream.active:
+                    time.sleep(0.1)
+                    line = statline.format(time.time()-t1, stream.frame_count, 
+                                           nullinp or str(stream.txq.write_available),
+                                           nullout or str(stream.rxq.read_available))
+                    print(line, end='', flush=True)
+        except:
+            print()
+            raise
     except KeyboardInterrupt:
         pass
-    finally:
-        print()
 
     return 0
 
