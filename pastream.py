@@ -97,7 +97,7 @@ class QueuedStreamBase(sd._StreamBase):
 
         if kind == 'duplex' or kind == 'input':
             self.rxq = rtmixer.RingBuffer(self.framesize[0] if kind=='duplex' else self.framesize, qsize)
-            self.rxq.event = threading.Event()
+            self.rxq.event = threading.Semaphore(0)
         else:
             self.rxq = None
 
@@ -112,7 +112,7 @@ class QueuedStreamBase(sd._StreamBase):
             raise sd.CallbackAbort
 
         iframes = self.rxq.write(in_data, frame_count)
-        self.rxq.event.set()
+        self.rxq.event.release()
 
         self.frame_count += frame_count
 
@@ -143,7 +143,7 @@ class QueuedStreamBase(sd._StreamBase):
             raise sd.CallbackAbort
 
         iframes = self.rxq.write(in_data, frame_count)
-        self.rxq.event.set()
+        self.rxq.event.release()
 
         oframes = self.txq.read(out_data, frame_count)
         self.txq.event.set()
@@ -151,6 +151,7 @@ class QueuedStreamBase(sd._StreamBase):
         # This is our last callback!
         if oframes < frame_count:
             self.frame_count += oframes
+            self.rxq.event.release()
             raise sd.CallbackStop
 
         self.frame_count += frame_count
@@ -163,10 +164,9 @@ class QueuedStreamBase(sd._StreamBase):
 
         if self.rxq is not None:
             self.rxq.flush()
-            self.rxq.event.set()
+            self.rxq.event.release()
 
         if self.txq is not None:
-            self._exit.set()
             self.txq.flush()
             self.txq.event.set()
 
@@ -176,7 +176,7 @@ class QueuedStreamBase(sd._StreamBase):
 
     def start(self):
         if self.rxq is not None:
-            self.rxq.event.clear()
+            while self.rxq.event.acquire(timeout=0): pass
         if self.txq is not None:
             self.txq.event.set()
             while self.txq.write_available:
@@ -274,17 +274,15 @@ class ThreadedStreamBase(QueuedStreamBase):
     def _stopiothreads(self):
         currthread = threading.current_thread()
 
+        self._exit.set()
         if self.rxt is not None and self.rxt.is_alive() and self.rxt != currthread:
-            self.rxq.event.set()
             self.rxt.join()
-            self.rxq.event.clear()
 
         if self.txt is not None and self.txt.is_alive() and self.txt != currthread:
-            self.txq.event.set()
             self.txt.join()
-            self.txq.event.clear()
 
     def start(self):
+        self._exit.clear()
         if self.txt is not None:
             self.txt.start()
         if self.rxt is not None:
@@ -305,27 +303,22 @@ class ThreadedStreamBase(QueuedStreamBase):
         self._raise_exceptions()
 
 def _soundfilewriter(stream, ringbuff):
-    if isinstance(stream.dtype, basestring):
-        framesize = stream.framesize
-        dtype = stream.dtype
-    else:
+    try:               
         framesize = stream.framesize[0]
         dtype = stream.dtype[0]
+    except TypeError: 
+        framesize = stream.framesize
+        dtype = stream.dtype    
 
     buff = bytearray(stream.fileblocksize*framesize)
     while True:
-        nframes = ringbuff.read_available
-        if nframes == 0: 
-            ringbuff.event.clear()
+        if not ringbuff.event.acquire(timeout=1):
+            raise AudioBufferError("time out waiting to read data")
 
-        if nframes or ringbuff.event.wait():
-            nframes = min(ringbuff.read_available, stream.fileblocksize)
-            if nframes > 0:
-                nframes = ringbuff.read(buff, nframes)
-                stream.out_fh.buffer_write(buff[:nframes*framesize], dtype=dtype)
-
+        nframes = ringbuff.read(buff)
         if nframes == 0:
             break
+        stream.out_fh.buffer_write(buff[:nframes*framesize], dtype=dtype)
 
 def _soundfilereader(stream, ringbuff):
     try:               
@@ -337,18 +330,16 @@ def _soundfilereader(stream, ringbuff):
 
     buff = bytearray(stream.fileblocksize*framesize)
     while not stream._exit.is_set():
+        if not ringbuff.event.wait(timeout=1):
+            raise AudioBufferError("time out waiting to write data")
+
         nframes = ringbuff.write_available
         if nframes == 0: 
             ringbuff.event.clear()
+            continue
 
-        if nframes or ringbuff.event.wait():
-            nframes = min(ringbuff.write_available, stream.fileblocksize)
-            if nframes > 0:
-                nframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
-                nframes = ringbuff.write(buff, nframes)
-
-        if nframes == 0:
-            break
+        nframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
+        nframes = ringbuff.write(buff, nframes)
 
 class SoundFileStreamBase(ThreadedStreamBase):
     """
@@ -488,21 +479,20 @@ def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False
     if channels > 1:
         always_2d = True
 
-    rxqueue = stream.rxq
+    ringbuff = stream.rxq
     outbuff = np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
     with stream:
         while stream.active:
-            nframes = rxqueue.read_available
-            if nframes == 0: 
-                rxqueue.event.clear()
-            if nframes or rxqueue.event.wait():
-                nframes = min(rxqueue.read_available, blocksize)
-                if nframes > 0:
-                    nframes = rxqueue.read(outbuff[overlap:], nframes)
-            if nframes == 0:
+            if not ringbuff.event.acquire(timeout=1):
+                raise AudioBufferError("time out waiting to read data")
+
+            nframes = ringbuff.read(outbuff[overlap:])
+
+            if nframes:
+                yield outbuff[:overlap+nframes].copy() if copy else outbuff[:overlap+nframes]
+
+            if nframes < blocksize:
                 break
-                
-            yield outbuff[:overlap+nframes].copy() if copy else outbuff[:overlap+nframes]
 
             outbuff[:-incframes] = outbuff[incframes:]
 
@@ -557,10 +547,10 @@ Input audio file, or, use the special designator '-' for recording only.''')
                         help='''\
 Output recording file, or, use the special designator '-' for playback only.''')
 
-    parser.add_argument("--loop", default=False, nargs='?', metavar='n', const=True, type=int,
-                        help='''\
-Replay the playback file n times. If no argument is specified, playback will
-loop infinitely. Does nothing if there is no playback.''')
+#     parser.add_argument("--loop", default=False, nargs='?', metavar='n', const=True, type=int,
+#                         help='''\
+# Replay the playback file n times. If no argument is specified, playback will
+# loop infinitely. Does nothing if there is no playback.''')
 
     parser.add_argument("-l", action=ListStreamsAction, nargs=0,
                        help="List available audio device streams.")
@@ -586,6 +576,9 @@ this option. (In units of frames).''')
     devopts.add_argument("-f", "--format", dest='dtype',
                          choices=sd._sampleformats.keys(),
                          help='''Sample format of device I/O stream.''')
+
+    devopts.add_argument("-c", "--channels", type=int,
+                         help="Number of channels.")
 
     devopts.add_argument("-r", "--rate", dest='samplerate',
                          type=lambda x: int(float(x[:-1])*1000) if x.endswith('k') else int(x),
@@ -622,13 +615,13 @@ def main(argv=None):
                                         'format': args.file_type
                                     },
                                     device=args.device,
+                                    channels=args.channels,
                                     dtype=args.dtype,
                                     fileblocksize=args.file_blocksize,
                                     samplerate=args.samplerate,
                                     blocksize=args.blocksize)
 
-
-    statline = "\r{:8.3f}s {:10d} frames processed, {:>10s} frames available, {:>10s} frames queued\r"
+    statline = "\r{:8.3f}s {:10d} frames processed, {:>10s} frames available for writing, {:>10s} frames queued for reading\r"
     print("<-", stream.inp_fh if stream.inp_fh is not None else 'null')
     print("--", stream)
     print("->", stream.out_fh if stream.out_fh is not None else 'null')
@@ -640,20 +633,18 @@ def main(argv=None):
         nullout = 'n/a'
     
     try:
-        try:
-            with stream:
-                t1 = time.time()
-                while stream.active:
-                    time.sleep(0.1)
-                    line = statline.format(time.time()-t1, stream.frame_count, 
-                                           nullinp or str(stream.txq.write_available),
-                                           nullout or str(stream.rxq.read_available))
-                    print(line, end='', flush=True)
-        except:
-            print()
-            raise
+        with stream:
+            t1 = time.time()
+            while stream.active:
+                time.sleep(0.1)
+                line = statline.format(time.time()-t1, stream.frame_count, 
+                                       nullinp or str(stream.txq.write_available),
+                                       nullout or str(stream.rxq.read_available))
+                print(line, end='', flush=True)
     except KeyboardInterrupt:
         pass
+    finally:
+        print()
 
     return 0
 
