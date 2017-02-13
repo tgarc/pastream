@@ -176,12 +176,12 @@ class QueuedStreamBase(sd._StreamBase):
 
     def start(self):
         if self.rxq is not None:
-            while self.rxq.event.acquire(timeout=0): pass
+            while self.rxq.event.acquire(0): pass
         if self.txq is not None:
-            self.txq.event.set()
-            while self.txq.write_available:
-                time.sleep(0.001)
-            self.txq.event.clear()
+            if not self.txq.write_available:
+                self.txq.event.clear()
+            else:
+                self.txq.event.set()
         super(QueuedStreamBase, self).start()
 
     def stop(self):
@@ -243,8 +243,7 @@ class ThreadedStreamBase(QueuedStreamBase):
             try:
                 raise exctype(excval).with_traceback(exctb)
             except AttributeError:
-                traceback.print_tb(exctb)
-                raise exctype(excval)
+                exec("raise excval, None, exctb")
 
         raise exc
 
@@ -284,7 +283,11 @@ class ThreadedStreamBase(QueuedStreamBase):
     def start(self):
         self._exit.clear()
         if self.txt is not None:
+            self.txq.event.set()
             self.txt.start()
+            while self.txq.write_available and self.txt.is_alive(): 
+                time.sleep(0.001)
+
         if self.rxt is not None:
             self.rxt.start()
         super(ThreadedStreamBase, self).start()
@@ -312,8 +315,7 @@ def _soundfilewriter(stream, ringbuff):
 
     buff = bytearray(stream.fileblocksize*framesize)
     while True:
-        if not ringbuff.event.acquire(timeout=1):
-            raise AudioBufferError("time out waiting to read data")
+        ringbuff.event.acquire()
 
         nframes = ringbuff.read(buff)
         if nframes == 0:
@@ -483,11 +485,9 @@ def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False
     outbuff = np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
     with stream:
         while stream.active:
-            if not ringbuff.event.acquire(timeout=1):
-                raise AudioBufferError("time out waiting to read data")
+            ringbuff.event.acquire()
 
             nframes = ringbuff.read(outbuff[overlap:])
-
             if nframes:
                 yield outbuff[:overlap+nframes].copy() if copy else outbuff[:overlap+nframes]
 
@@ -640,7 +640,7 @@ def main(argv=None):
                 line = statline.format(time.time()-t1, stream.frame_count, 
                                        nullinp or str(stream.txq.write_available),
                                        nullout or str(stream.rxq.read_available))
-                print(line, end='', flush=True)
+                sys.stdout.write(line); sys.stdout.flush()
     except KeyboardInterrupt:
         pass
     finally:
