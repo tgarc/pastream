@@ -313,7 +313,7 @@ def _soundfilewriter(stream, ringbuff):
         framesize = stream.framesize
         dtype = stream.dtype    
 
-    buff = bytearray(stream.fileblocksize*framesize)
+    buff = memoryview(bytearray(stream.fileblocksize*framesize))
     while True:
         ringbuff.event.acquire()
 
@@ -330,18 +330,20 @@ def _soundfilereader(stream, ringbuff):
         framesize = stream.framesize
         dtype = stream.dtype    
 
-    buff = bytearray(stream.fileblocksize*framesize)
+    buff = memoryview(bytearray(stream.fileblocksize*framesize))
     while not stream._exit.is_set():
         if not ringbuff.event.wait(timeout=1):
             raise AudioBufferError("time out waiting to write data")
 
-        nframes = ringbuff.write_available
+        nframes = min(ringbuff.write_available, stream.fileblocksize)
         if nframes == 0: 
             ringbuff.event.clear()
             continue
 
-        nframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
-        nframes = ringbuff.write(buff, nframes)
+        readframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
+        ringbuff.write(buff, readframes)
+        if readframes < nframes:
+            break
 
 class SoundFileStreamBase(ThreadedStreamBase):
     """
