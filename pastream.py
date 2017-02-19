@@ -29,6 +29,10 @@ import sounddevice as sd
 import soundfile as sf
 import traceback
 import rtmixer
+try:
+    import numpy as np
+except:
+    np = None
 
 __usage__ = "%(prog)s [options] [-d device] input output"
 
@@ -462,8 +466,10 @@ class SoundFileStream(SoundFileStreamBase):
                                               kind='duplex', **kwargs)
 
 def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False, qwriter=None, streamclass=None, **kwargs):
-    import numpy as np
-    assert blocksize is not None and blocksize > 0, "Requires a fixed known blocksize"
+    if blocksize is None or blocksize <= 0:
+        raise ValueError("Requires a fixed known blocksize")
+    if np is None and always_2d:
+        raise ValueError("always_2d is only supported with numpy")
 
     incframes = blocksize-overlap
     if inpf is None and qwriter is None:
@@ -473,28 +479,41 @@ def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False
         stream = streamclass(blocksize=incframes, **kwargs)
         dtype = stream.dtype
         channels = stream.channels
+        framesize = stream.framesize
     else:
         if streamclass is None: 
             streamclass = SoundFileStream
         stream = streamclass(inpf, blocksize=incframes, **kwargs)
         dtype = stream.dtype[0]
         channels = stream.channels[0]
+        framesize = stream.framesize[0]
 
     if channels > 1:
         always_2d = True
 
     ringbuff = stream.rxq
-    outbuff = np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
+    if np is None:
+        outbuff = memoryview(bytearray(blocksize*framesize))
+    else:
+        outbuff = np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
+
+    if copy:
+        if np is None:
+            yielder = lambda buff: memoryview(bytearray(buff))
+        else:
+            yielder = np.copy
+    else:
+        yielder = None
+
     with stream:
         while stream.active:
             ringbuff.event.acquire()
 
             nframes = ringbuff.read(outbuff[overlap:])
-            if nframes:
-                yield outbuff[:overlap+nframes].copy() if copy else outbuff[:overlap+nframes]
-
-            if nframes < blocksize:
+            if nframes == 0:
                 break
+
+            yield yielder(outbuff[:overlap+nframes]) if copy else outbuff[:overlap+nframes]
 
             outbuff[:-incframes] = outbuff[incframes:]
 
