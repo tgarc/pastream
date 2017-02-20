@@ -50,7 +50,8 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     found_delay = False
     nframes = mframes = 0
     
-    for outframes in pas.blockstream(inp_fh, **devargs):
+    stream = pas.SoundFileStream(inp_fh, **devargs)
+    for outframes in stream.blockstream(always_2d=True):
         if not found_delay:
             matches = outframes[:, 0].view('u4') == preamble
             if np.any(matches): 
@@ -74,45 +75,43 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
 
     print("Matched %d of %d frames; Initial delay of %d frames" % (mframes, nframes, delay))
 
-class PortAudioLoopbackTester(object):
-    def _gen_random(self, rdm_fh, nseconds, elementsize):
-        """
-        Generates a uniformly random integer signal ranging between the
-        minimum and maximum possible values as defined by `elementsize`. The random
-        signal is preceded by a constant level equal to the maximum positive
-        integer value for 100ms or N=sampling_rate/10 samples (the 'preamble')
-        which can be used in testing to find the beginning of a recording.
+def gen_random(rdm_fh, nseconds, elementsize):
+    """
+    Generates a uniformly random integer signal ranging between the
+    minimum and maximum possible values as defined by `elementsize`. The random
+    signal is preceded by a constant level equal to the maximum positive
+    integer value for 100ms or N=sampling_rate/10 samples (the 'preamble')
+    which can be used in testing to find the beginning of a recording.
 
-        nseconds - how many seconds of data to generate
-        elementsize - size of each element (single sample of a single frame) in bytes
-        """
-        shift = 8*(4-elementsize)
-        minval = -(0x80000000>>shift)
-        maxval = 0x7FFFFFFF>>shift
+    nseconds - how many seconds of data to generate
+    elementsize - size of each element (single sample of a single frame) in bytes
+    """
+    shift = 8*(4-elementsize)
+    minval = -(0x80000000>>shift)
+    maxval = 0x7FFFFFFF>>shift
 
-        preamble = np.zeros((rdm_fh.samplerate//10, rdm_fh.channels), dtype=np.int32)
-        preamble[:] = (PREAMBLE >> shift) << shift
-        rdm_fh.write(preamble)
+    preamble = np.zeros((rdm_fh.samplerate//10, rdm_fh.channels), dtype=np.int32)
+    preamble[:] = (PREAMBLE >> shift) << shift
+    rdm_fh.write(preamble)
 
-        for i in range(nseconds):
-            pattern = np.random.randint(minval, maxval+1, (rdm_fh.samplerate, rdm_fh.channels)) << shift
-            rdm_fh.write(pattern.astype(np.int32))
+    for i in range(nseconds):
+        pattern = np.random.randint(minval, maxval+1, (rdm_fh.samplerate, rdm_fh.channels)) << shift
+        rdm_fh.write(pattern.astype(np.int32))
 
-class TestDummyLoopback(PortAudioLoopbackTester):
-    def test_wav(self, tmpdir):
-        elementsize = _dtype2elementsize[DEVICE_KWARGS['dtype']]
+def test_alsa_loopback(tmpdir):
+    elementsize = _dtype2elementsize[DEVICE_KWARGS['dtype']]
 
-        rdmf = tempfile.mktemp(dir=str(tmpdir))
-        rdm_fh = sf.SoundFile(rdmf, 'w+', DEVICE_KWARGS['samplerate'], DEVICE_KWARGS['channels'], 'PCM_'+['8', '16','24','32'][elementsize-1], format='wav')
+    rdmf = tempfile.mktemp(dir=str(tmpdir))
+    rdm_fh = sf.SoundFile(rdmf, 'w+', DEVICE_KWARGS['samplerate'], DEVICE_KWARGS['channels'], 'PCM_'+['8', '16','24','32'][elementsize-1], format='wav')
 
-        self._gen_random(rdm_fh, 5, elementsize)
-        rdm_fh.seek(0)
+    gen_random(rdm_fh, 5, elementsize)
+    rdm_fh.seek(0)
 
-        dtype = DEVICE_KWARGS['dtype']
-        if DEVICE_KWARGS['dtype'] == 'int24': 
-            # Tell the OS it's a 32-bit stream and ignore the extra zeros
-            # because 24 bit streams are annoying to deal with
-            dtype = 'int32' 
+    dtype = DEVICE_KWARGS['dtype']
+    if DEVICE_KWARGS['dtype'] == 'int24': 
+        # Tell the OS it's a 32-bit stream and ignore the extra zeros
+        # because 24 bit streams are annoying to deal with
+        dtype = 'int32' 
 
-        shift = 8*(4-elementsize)
-        assert_loopback_equal(rdm_fh, (PREAMBLE>>shift)<<shift, dtype=dtype)
+    shift = 8*(4-elementsize)
+    assert_loopback_equal(rdm_fh, (PREAMBLE>>shift)<<shift, dtype=dtype)

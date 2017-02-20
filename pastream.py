@@ -194,6 +194,75 @@ class QueuedStreamBase(sd._StreamBase):
         super(QueuedStreamBase, self).abort()
         self._closequeues()
 
+    def blockstream(self, overlap=0, always_2d=False, copy=False):
+        """
+        Similar to SoundFile.blocks. Returns an iterator over audio chunks read from
+        a Portaudio stream. Can be either half-duplex (recording-only) or
+        full-duplex if an input file is supplied.
+
+        Parameters
+        ------------
+        overlap : int
+            Number of frames to overlap across blocks.
+        always_2d : bool
+            Always returns blocks 2 dimensional arrays. Only valid if you have numpy
+            installed.
+        copy : bool
+            Whether to return copies of blocks. By default a view is returned.
+
+        Yields
+        -------
+        array
+            ndarray or memoryview object with `blocksize` elements.
+        """
+        blocksize = self.blocksize
+        assert not self.active, "Stream has already been started!"
+        if not blocksize:
+            raise ValueError("Requires a fixed known blocksize")
+        if overlap >= blocksize:
+            raise ValueError("Overlap must be less than blocksize")
+        if np is None and always_2d:
+            raise ValueError("always_2d is only supported with numpy")
+
+        try:
+            channels = self.channels[0]
+            dtype = self.dtype[0]
+            framesize = self.framesize[0]
+        except TypeError:
+            dtype = self.dtype
+            channels = self.channels
+            framesize = self.framesize
+
+        if channels > 1:
+            always_2d = True
+
+        if np is None:
+            outbuff = memoryview(bytearray(blocksize*framesize))
+        else:
+            outbuff = np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
+
+        if copy:
+            if np is None:
+                yielder = lambda buff: memoryview(bytearray(buff))
+            else:
+                yielder = np.copy
+        else:
+            yielder = None
+
+        incframes = blocksize - overlap
+        ringbuff = self.rxq
+        with self:
+            while self.active:
+                ringbuff.event.acquire()
+
+                nframes = ringbuff.read(outbuff[overlap:], blocksize-overlap)
+                if nframes == 0:
+                    break
+
+                yield yielder(outbuff[:overlap + nframes]) if copy else outbuff[:overlap + nframes]
+
+                outbuff[:-incframes] = outbuff[incframes:]
+
     def start(self):
         if self.rxq is not None:
             while self.rxq.event.acquire(0): pass
@@ -578,8 +647,14 @@ def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False
         installed.
     copy : bool
         Whether to return copies of blocks. By default a view is returned.
+
+    Other Parameters
+    -----------------
+    qwriter : function
+        Function that handles writing to the audio transmit queue. Can be used
+        as an alternative to or in combination with an input file.
     streamclass : object
-        Base class to use.
+        Base class to use. Typically this is automatically determined from the input arguments.
     kwargs : dict
         Additional arguments to pass to base stream class.
 
@@ -588,12 +663,6 @@ def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False
     array
         ndarray or memoryview object with `blocksize` elements.
     """
-    if blocksize is None or blocksize <= 0:
-        raise ValueError("Requires a fixed known blocksize")
-    if np is None and always_2d:
-        raise ValueError("always_2d is only supported with numpy")
-
-    incframes = blocksize-overlap
     if inpf is None:
         if streamclass is None:
             if qwriter is None:
@@ -602,49 +671,13 @@ def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False
             else:
                 streamclass = ThreadedStreamBase 
                 kwargs['kind'] = 'duplex'
-        stream = streamclass(blocksize=incframes, qwriter=qwriter, **kwargs)
+        stream = streamclass(blocksize=blocksize, qwriter=qwriter, **kwargs)
     else:
         if streamclass is None: 
             streamclass = SoundFileStream
-        stream = streamclass(inpf, blocksize=incframes, qwriter=qwriter, **kwargs)
+        stream = streamclass(inpf, blocksize=blocksize, qwriter=qwriter, **kwargs)
 
-    try:
-        channels = stream.channels[0]
-        dtype = stream.dtype[0]
-        framesize = stream.framesize[0]
-    except TypeError:
-        dtype = stream.dtype
-        channels = stream.channels
-        framesize = stream.framesize
-
-    if channels > 1:
-        always_2d = True
-
-    ringbuff = stream.rxq
-    if np is None:
-        outbuff = memoryview(bytearray(blocksize*framesize))
-    else:
-        outbuff = np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
-
-    if copy:
-        if np is None:
-            yielder = lambda buff: memoryview(bytearray(buff))
-        else:
-            yielder = np.copy
-    else:
-        yielder = None
-
-    with stream:
-        while stream.active:
-            ringbuff.event.acquire()
-
-            nframes = ringbuff.read(outbuff[overlap:])
-            if nframes == 0:
-                break
-
-            yield yielder(outbuff[:overlap+nframes]) if copy else outbuff[:overlap+nframes]
-
-            outbuff[:-incframes] = outbuff[incframes:]
+    return stream.blockstream(overlap, copy, always_2d)
 
 # Used just for the pastream app
 def SoundFileStreamFactory(inpf=None, outf=None, **kwargs):
