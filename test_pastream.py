@@ -11,6 +11,7 @@ import time
 import tempfile
 import platform
 import pastream as pas
+import rtmixer
 
 
 # Set up the platform specific device
@@ -37,23 +38,36 @@ if 'SOUNDDEVICE_DEVICE_SAMPLERATE' in os.environ:
 PREAMBLE = 0x7FFFFFFF # Value used for the preamble sequence (before appropriate shifting for dtype)
 
 _dtype2elementsize = dict(int32=4,int24=3,int16=2,int8=1)
-vhex = np.vectorize('{:#10x}'.format)
-tohex = lambda x: vhex(x.view('u4'))
+vhex = lambda x: np.vectorize(('{:#0%dx}'%(x.dtype.itemsize*2+2)).format)
+tohex = lambda x: vhex(x.view('u'+x.dtype.name.lstrip('u')))
 
 def assert_loopback_equal(inp_fh, preamble, **kwargs):
-    inpf2 = sf.SoundFile(inp_fh.name, mode='rb')
-
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
     delay = -1
     found_delay = False
-    nframes = mframes = 0
     
     stream = pas.SoundFileStream(inp_fh, **devargs)
+
+    # 'tee' the transmit queue writer so that we can recall any input and match
+    # it to the output. We make it larger than usual (4MB) too allow for extra
+    # slack
+    inpbuff = rtmixer.RingBuffer(stream.framesize[1], 1 << 24)
+    stream.txq.__write = stream.txq.write
+    def teewrite(buff, size=-1):
+        nbuff = inpbuff.write(buff, size=size)
+        nframes = stream.txq.__write(buff, size=size)
+        assert nbuff == nframes, "Ran out of temporary buffer space. Use a larger qsize"
+        return nframes
+    stream.txq.write = teewrite
+
+    unsigned_dtype = 'u'+stream.dtype[1]
+    nframes = mframes = 0
+    inframes = np.zeros((stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
     for outframes in stream.blockstream(always_2d=True):
         if not found_delay:
-            matches = outframes[:, 0].view('u4') == preamble
+            matches = outframes[:, 0].view(unsigned_dtype) == preamble
             if np.any(matches): 
                 found_delay = True
                 nonzeros = np.where(matches)[0]
@@ -61,14 +75,12 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
                 nframes += nonzeros[0]
                 delay = nframes
         if found_delay:
-            inframes = inpf2.read(len(outframes), dtype='int32', always_2d=True)
-
-            mlen = min(len(inframes), len(outframes))
-            inp = inframes[:mlen].view('u4')
-            out = outframes[:mlen].view('u4')
+            readframes = inpbuff.read(inframes, len(outframes))
+            inp = inframes[:readframes].view(unsigned_dtype)
+            out = outframes[:readframes].view(unsigned_dtype)
 
             npt.assert_array_equal(inp, out, "Loopback data mismatch")
-            mframes += mlen
+            mframes += readframes
         nframes += len(outframes)
 
     assert delay != -1, "Preamble not found or was corrupted"
