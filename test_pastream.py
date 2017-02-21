@@ -10,7 +10,7 @@ import numpy.testing as npt
 import time
 import tempfile
 import platform
-import pastream as pas
+import pastream as ps
 import rtmixer
 
 
@@ -27,13 +27,13 @@ else:
 if 'SOUNDDEVICE_DEVICE_NAME' in os.environ:
     DEVICE_KWARGS['device'] = os.environ['SOUNDDEVICE_DEVICE_NAME']
 if 'SOUNDDEVICE_DEVICE_BLOCKSIZE' in os.environ:
-    DEVICE_KWARGS['blocksize'] = os.environ['SOUNDDEVICE_DEVICE_BLOCKSIZE']
+    DEVICE_KWARGS['blocksize'] = int(os.environ['SOUNDDEVICE_DEVICE_BLOCKSIZE'])
 if 'SOUNDDEVICE_DEVICE_DTYPE' in os.environ:
     DEVICE_KWARGS['dtype'] = os.environ['SOUNDDEVICE_DEVICE_DTYPE']
 if 'SOUNDDEVICE_DEVICE_CHANNELS' in os.environ:
-    DEVICE_KWARGS['channels'] = os.environ['SOUNDDEVICE_DEVICE_CHANNELS']
+    DEVICE_KWARGS['channels'] = int(os.environ['SOUNDDEVICE_DEVICE_CHANNELS'])
 if 'SOUNDDEVICE_DEVICE_SAMPLERATE' in os.environ:
-    DEVICE_KWARGS['SAMPLERATE'] = os.environ['SOUNDDEVICE_DEVICE_SAMPLERATE']
+    DEVICE_KWARGS['SAMPLERATE'] = int(os.environ['SOUNDDEVICE_DEVICE_SAMPLERATE'])
 
 PREAMBLE = 0x7FFFFFFF # Value used for the preamble sequence (before appropriate shifting for dtype)
 
@@ -48,7 +48,7 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     delay = -1
     found_delay = False
     
-    stream = pas.SoundFileStream(inp_fh, **devargs)
+    stream = ps.SoundFileStream(inp_fh, **devargs)
 
     # 'tee' the transmit queue writer so that we can recall any input and match
     # it to the output. We make it larger than usual (4MB) too allow for extra
@@ -110,10 +110,10 @@ def gen_random(rdm_fh, nseconds, elementsize):
         pattern = np.random.randint(minval, maxval+1, (rdm_fh.samplerate, rdm_fh.channels)) << shift
         rdm_fh.write(pattern.astype(np.int32))
 
-def test_alsa_loopback(tmpdir):
+def test_loopback():
     elementsize = _dtype2elementsize[DEVICE_KWARGS['dtype']]
 
-    rdmf = tempfile.mktemp(dir=str(tmpdir))
+    rdmf = tempfile.TemporaryFile()
     rdm_fh = sf.SoundFile(rdmf, 'w+', DEVICE_KWARGS['samplerate'], DEVICE_KWARGS['channels'], 'PCM_'+['8', '16','24','32'][elementsize-1], format='wav')
 
     gen_random(rdm_fh, 5, elementsize)
