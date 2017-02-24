@@ -73,10 +73,10 @@ class _QueuedStreamBase(_sd._StreamBase):
 
     Attributes
     ----------
-    txq : Ringbuffer
-        RingBuffer used for writing audio data to the output Portaudio stream.
-    rxq : Ringbuffer
-        RingBuffer used for reading audio data from the input Portaudio stream.
+    txq : Queue
+        Queue used for writing audio data to the output Portaudio stream.
+    rxq : Queue
+        Queue used for reading audio data from the input Portaudio stream.
     framesize : int
         The audio frame size in bytes. Equivalent to channels*samplesize.
     """
@@ -125,7 +125,7 @@ class _QueuedStreamBase(_sd._StreamBase):
             raise _sd.CallbackAbort
 
         try:
-            self.rxq.put_nowait(bytearray(in_data))
+            self.rxq.put(bytearray(in_data), False)
         except _queue.Full:
             self._set_exception(_queue.Full("Receive queue is full."))
             raise _sd.CallbackAbort
@@ -139,7 +139,7 @@ class _QueuedStreamBase(_sd._StreamBase):
             raise _sd.CallbackAbort
 
         try:
-            txbuff = self.txq.get_nowait()
+            txbuff = self.txq.get(False)
         except _queue.Empty:
             self._set_exception(_queue.Empty("Transmit queue is empty."))
             raise _sd.CallbackAbort
@@ -160,7 +160,7 @@ class _QueuedStreamBase(_sd._StreamBase):
             raise _sd.CallbackAbort
 
         try:
-            txbuff = self.txq.get_nowait()
+            txbuff = self.txq.get(False)
         except _queue.Empty:
             self._set_exception(_queue.Empty("Transmit queue is empty."))
             raise _sd.CallbackAbort
@@ -168,7 +168,7 @@ class _QueuedStreamBase(_sd._StreamBase):
         out_data[:len(txbuff)] = txbuff
 
         try:
-            self.rxq.put_nowait(bytearray(in_data))
+            self.rxq.put(bytearray(in_data), False)
         except _queue.Full:
             self._set_exception(_queue.Full("Receive queue is full."))
             raise _sd.CallbackAbort
@@ -214,7 +214,7 @@ class _QueuedStreamBase(_sd._StreamBase):
                 "channels={1._channels}, dtype={1._dtype!r}, blocksize={1._blocksize})").format(self.__class__.__name__, self)
 
 class _InputStreamMixin(object):
-    def blockstream(self, overlap=0, always_2d=False, copy=False):
+    def blockstream(self, always_2d=False):
         """
         Similar to SoundFile.blocks. Returns an iterator over audio chunks read from
         a Portaudio stream. Can be either half-duplex (recording-only) or
@@ -222,13 +222,9 @@ class _InputStreamMixin(object):
 
         Parameters
         ----------
-        overlap : int
-            Number of frames to overlap across blocks.
         always_2d : bool
             Always returns blocks 2 dimensional arrays. Only valid if you have numpy
             installed.
-        copy : bool
-            Whether to return copies of blocks. By default a view is returned.
 
         Yields
         ------
@@ -239,8 +235,6 @@ class _InputStreamMixin(object):
         assert not self.active, "Stream has already been started!"
         if not blocksize:
             raise ValueError("Requires a fixed known blocksize")
-        if overlap >= blocksize:
-            raise ValueError("Overlap must be less than blocksize")
         if _np is None and always_2d:
             raise ValueError("always_2d is only supported with numpy")
 
@@ -256,21 +250,8 @@ class _InputStreamMixin(object):
         if channels > 1:
             always_2d = True
 
-        if _np is None:
-            outbuff = memoryview(bytearray(blocksize*framesize))
-        else:
-            outbuff = _np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
-
-        if copy:
-            if _np is None:
-                yielder = lambda buff: memoryview(bytearray(buff))
-            else:
-                yielder = _np.copy
-        else:
-            yielder = None
-
-        incframes = blocksize - overlap
-        ringbuff = self.rxq
+        incframes = blocksize # - overlap
+        rxqueue = self.rxq
         with self:
             while self.active:
                 try:
@@ -279,14 +260,15 @@ class _InputStreamMixin(object):
                     raise _queue.Empty("Timed out waiting for data.")
                 if item is None: break
 
-                rxbuff = np.frombuffer(item, dtype=dtype)
-                if always_2d:
-                    rxbuff.shape = (len(rxbuff)//channels, channels)
-                outbuff[overlap:overlap+len(rxbuff)] = rxbuff
+                nframes = len(item) // channels
+                if _np is not None:
+                    rxbuff = _np.frombuffer(item, dtype=dtype)
+                    if always_2d:
+                        rxbuff.shape = (len(rxbuff)//channels, channels)
+                else:
+                    rxbuff = memoryview(item)
 
-                yield yielder(outbuff[:overlap + nframes]) if copy else outbuff[:overlap + nframes]
-
-                outbuff[:-incframes] = outbuff[incframes:]
+                yield rxbuff
 
 class QueuedInputStream(_InputStreamMixin, _QueuedStreamBase):
     def __init__(self, **kwargs):
