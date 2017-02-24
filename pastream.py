@@ -27,7 +27,6 @@ import time as _time
 import sys as _sys
 import sounddevice as _sd
 import soundfile as _sf
-import rtmixer as _rtmixer
 try:
     import numpy as _np
 except:
@@ -108,15 +107,14 @@ class _QueuedStreamBase(_sd._StreamBase):
             self.framesize = self.samplesize*self.channels
 
         if kind == 'duplex' or kind == 'output':
-            self.txq = _rtmixer.RingBuffer(self.framesize[1] if kind=='duplex' else self.framesize, qsize)
-            self.txq.event = _threading.Event()
-            self.txq.event.set()
+            if self.blocksize and qsize > 0:
+                qsize = (qsize+self.blocksize-1)//self.blocksize
+            self.txq = _queue.Queue(qsize)
         else:
             self.txq = None
 
         if kind == 'duplex' or kind == 'input':
-            self.rxq = _rtmixer.RingBuffer(self.framesize[0] if kind=='duplex' else self.framesize, qsize)
-            self.rxq.event = _threading.Semaphore(0)
+            self.rxq = _queue.Queue(-1)
         else:
             self.rxq = None
 
@@ -126,12 +124,11 @@ class _QueuedStreamBase(_sd._StreamBase):
             self._set_exception(AudioBufferError(str(status)))
             raise _sd.CallbackAbort
 
-        if self.rxq.write_available < frame_count:
-            self._set_exception(AudioBufferError("Receive queue is full."))
+        try:
+            self.rxq.put_nowait(bytearray(in_data))
+        except _queue.Full:
+            self._set_exception(_queue.Full("Receive queue is full."))
             raise _sd.CallbackAbort
-
-        iframes = self.rxq.write(in_data, frame_count)
-        self.rxq.event.release()
 
         self.frame_count += frame_count
 
@@ -141,12 +138,17 @@ class _QueuedStreamBase(_sd._StreamBase):
             self._set_exception(AudioBufferError(str(status)))
             raise _sd.CallbackAbort
 
-        oframes = self.txq.read(out_data, frame_count)
-        self.txq.event.set()
+        try:
+            txbuff = self.txq.get_nowait()
+        except _queue.Empty:
+            self._set_exception(_queue.Empty("Transmit queue is empty."))
+            raise _sd.CallbackAbort
+
+        out_data[:len(txbuff)] = txbuff
 
         # This is our last callback!
-        if oframes < frame_count:
-            self.frame_count += oframes
+        if len(txbuff) < frame_count*self.framesize:
+            self.frame_count += len(txbuff)//self.framesize
             raise _sd.CallbackStop
 
         self.frame_count += frame_count
@@ -157,20 +159,24 @@ class _QueuedStreamBase(_sd._StreamBase):
             self._set_exception(AudioBufferError(str(status)))
             raise _sd.CallbackAbort
 
-        if self.rxq.write_available < frame_count:
-            self._set_exception(AudioBufferError("Receive queue is full."))
+        try:
+            txbuff = self.txq.get_nowait()
+        except _queue.Empty:
+            self._set_exception(_queue.Empty("Transmit queue is empty."))
             raise _sd.CallbackAbort
 
-        iframes = self.rxq.write(in_data, frame_count)
-        self.rxq.event.release()
+        out_data[:len(txbuff)] = txbuff
 
-        oframes = self.txq.read(out_data, frame_count)
-        self.txq.event.set()
+        try:
+            self.rxq.put_nowait(bytearray(in_data))
+        except _queue.Full:
+            self._set_exception(_queue.Full("Receive queue is full."))
+            raise _sd.CallbackAbort
 
         # This is our last callback!
-        if oframes < frame_count:
-            self.frame_count += oframes
-            self.rxq.event.release()
+        if len(txbuff) < frame_count*self.framesize[1]:
+            self.frame_count += len(txbuff)//self.framesize[1]
+            self.rxq.put(None) # This actually gets done in closequeues but that method doesn't work in windows
             raise _sd.CallbackStop
 
         self.frame_count += frame_count
@@ -182,26 +188,18 @@ class _QueuedStreamBase(_sd._StreamBase):
             return
 
         if self.rxq is not None:
-            self.rxq.flush()
-            self.rxq.event.release()
+            self.rxq.queue.clear()
+            self.rxq.put(None)
 
         if self.txq is not None:
-            self.txq.flush()
-            self.txq.event.set()
+            with self.txq.mutex:
+                self._exit.set()
+                self.txq.queue.clear()
+                self.txq.not_full.notify()
 
     def abort(self):
         super(_QueuedStreamBase, self).abort()
         self._closequeues()
-
-    def start(self):
-        if self.rxq is not None:
-            while self.rxq.event.acquire(0): pass
-        if self.txq is not None:
-            if not self.txq.write_available:
-                self.txq.event.clear()
-            else:
-                self.txq.event.set()
-        super(_QueuedStreamBase, self).start()
 
     def stop(self):
         super(_QueuedStreamBase, self).stop()
@@ -275,11 +273,16 @@ class _InputStreamMixin(object):
         ringbuff = self.rxq
         with self:
             while self.active:
-                ringbuff.event.acquire()
+                try:
+                    item = rxqueue.get(timeout=1)
+                except _queue.Empty:
+                    raise _queue.Empty("Timed out waiting for data.")
+                if item is None: break
 
-                nframes = ringbuff.read(outbuff[overlap:], blocksize-overlap)
-                if nframes == 0:
-                    break
+                rxbuff = np.frombuffer(item, dtype=dtype)
+                if always_2d:
+                    rxbuff.shape = (len(rxbuff)//channels, channels)
+                outbuff[overlap:overlap+len(rxbuff)] = rxbuff
 
                 yield yielder(outbuff[:overlap + nframes]) if copy else outbuff[:overlap + nframes]
 
@@ -410,9 +413,9 @@ class _ThreadedStreamBase(_QueuedStreamBase):
     def start(self):
         self._exit.clear()
         if self.txt is not None:
-            self.txq.event.set()
+            # Prime the buffer
             self.txt.start()
-            while self.txq.write_available and self.txt.is_alive():
+            while not self.txq.full() and self.txt.is_alive():
                 _time.sleep(0.001)
 
         if self.rxt is not None:
@@ -515,8 +518,8 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
             qreader = self._soundfilewriter
 
         super(_SoundFileStreamBase, self).__init__(qreader=qreader,
-                                                  qwriter=qwriter, kind=kind,
-                                                  blocksize=blocksize, **kwargs)
+                                                   qwriter=qwriter, kind=kind,
+                                                   blocksize=blocksize, **kwargs)
 
         # Try and determine the file extension here; we need to know it if we
         # want to try and set a default subtype for the output
@@ -551,47 +554,39 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
 
     # Default handler for writing input from a ThreadedStream to a SoundFile object
     @staticmethod
-    def _soundfilewriter(stream, ringbuff):
-        try:
-            framesize = stream.framesize[0]
-            dtype = stream.dtype[0]
-        except TypeError:
-            framesize = stream.framesize
+    def _soundfilewriter(stream, rxq):
+        if isinstance(stream.dtype, _basestring):
             dtype = stream.dtype
+        else:
+            dtype = stream.dtype[0]
 
-        buff = memoryview(bytearray(stream.fileblocksize*framesize))
         while True:
-            ringbuff.event.acquire()
+            try:
+                item = rxq.get(timeout=1)
+            except _queue.Empty:
+                raise _queue.Empty("Timed out waiting for data.")
+            if item is None: break
 
-            nframes = ringbuff.read(buff)
-            if nframes == 0:
-                break
-            stream.out_fh.buffer_write(buff[:nframes*framesize], dtype=dtype)
+            stream.out_fh.buffer_write(item, dtype=dtype)
 
     # Default handler for reading input from a SoundFile object and writing it to a
     # ThreadedStream
     @staticmethod
-    def _soundfilereader(stream, ringbuff):
-        try:
+    def _soundfilereader(stream, txq):
+        try:               
             framesize = stream.framesize[1]
             dtype = stream.dtype[1]
-        except TypeError:
+        except TypeError: 
             framesize = stream.framesize
-            dtype = stream.dtype
+            dtype = stream.dtype    
 
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
         while not stream._exit.is_set():
-            if not ringbuff.event.wait(timeout=1):
-                raise AudioBufferError("time out waiting to write data")
+            nframes = stream.inp_fh.buffer_read_into(buff, dtype=dtype)
 
-            nframes = min(ringbuff.write_available, stream.fileblocksize)
-            if nframes == 0:
-                ringbuff.event.clear()
-                continue
+            txq.put(bytearray(buff[:nframes*framesize]))
 
-            readframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
-            ringbuff.write(buff, readframes)
-            if readframes < nframes:
+            if nframes < stream.fileblocksize:
                 break
 
     def close(self):
@@ -847,8 +842,8 @@ def _main(argv=None):
             while stream.active:
                 _time.sleep(0.1)
                 line = statline.format(_time.time()-t1, stream.frame_count,
-                                       nullinp or str(stream.txq.write_available),
-                                       nullout or str(stream.rxq.read_available))
+                                       nullinp or str(stream.txq.qsize()*stream.fileblocksize),
+                                       nullout or str(stream.rxq.qsize()*stream.fileblocksize))
                 _sys.stdout.write(line); _sys.stdout.flush()
     except KeyboardInterrupt:
         pass
