@@ -11,7 +11,7 @@ import time
 import tempfile
 import platform
 import pastream as ps
-import rtmixer
+import pa_ringbuffer
 
 
 # Set up the platform specific device
@@ -22,7 +22,7 @@ elif system == 'Darwin':
     raise Exception("Currently no support for Mac devices")
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
-    DEVICE_KWARGS = {'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512, 'channels': 8, 'samplerate':48000}
+    DEVICE_KWARGS = {'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512, 'channels': 1, 'samplerate':48000}
 
 if 'SOUNDDEVICE_DEVICE_NAME' in os.environ:
     DEVICE_KWARGS['device'] = os.environ['SOUNDDEVICE_DEVICE_NAME']
@@ -33,27 +33,24 @@ if 'SOUNDDEVICE_DEVICE_DTYPE' in os.environ:
 if 'SOUNDDEVICE_DEVICE_CHANNELS' in os.environ:
     DEVICE_KWARGS['channels'] = int(os.environ['SOUNDDEVICE_DEVICE_CHANNELS'])
 if 'SOUNDDEVICE_DEVICE_SAMPLERATE' in os.environ:
-    DEVICE_KWARGS['SAMPLERATE'] = int(os.environ['SOUNDDEVICE_DEVICE_SAMPLERATE'])
+    DEVICE_KWARGS['samplerate'] = int(os.environ['SOUNDDEVICE_DEVICE_SAMPLERATE'])
 
 PREAMBLE = 0x7FFFFFFF # Value used for the preamble sequence (before appropriate shifting for dtype)
 
 _dtype2elementsize = dict(int32=4,int24=3,int16=2,int8=1)
 vhex = lambda x: np.vectorize(('{:#0%dx}'%(x.dtype.itemsize*2+2)).format)
-tohex = lambda x: vhex(x.view('u'+x.dtype.name.lstrip('u')))
+tohex = lambda x: vhex(x.view('u%d'%x.dtype.itemsize))
 
 def assert_loopback_equal(inp_fh, preamble, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
-    delay = -1
-    found_delay = False
-    
     stream = ps.SoundFileStream(inp_fh, **devargs)
 
     # 'tee' the transmit queue writer so that we can recall any input and match
-    # it to the output. We make it larger than usual (4MB) too allow for extra
-    # slack
-    inpbuff = rtmixer.RingBuffer(stream.framesize[1], 1 << 24)
+    # it to the output. We make it larger than usual (4M frames) to allow for
+    # extra slack
+    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 24)
     stream.txq.__write = stream.txq.write
     def teewrite(buff, size=-1):
         nbuff = inpbuff.write(buff, size=size)
@@ -62,7 +59,9 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
         return nframes
     stream.txq.write = teewrite
 
-    unsigned_dtype = 'u'+stream.dtype[1]
+    delay = -1
+    found_delay = False
+    unsigned_dtype = 'u%d'%stream.samplesize[1]
     nframes = mframes = 0
     inframes = np.zeros((stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
     for outframes in stream.blockstream(always_2d=True):

@@ -85,30 +85,34 @@ class _BufferedStreamBase(_sd._StreamBase):
     framesize : int
         The audio frame size in bytes. Equivalent to channels*samplesize.
     """
-    def __init__(self, blocksize=None, qsize=PA_QSIZE, kind='duplex', channels=None, dtype=None, **kwargs):
+    def __init__(self, kind, qsize=PA_QSIZE, blocksize=None, device=None,
+                 channels=None, dtype=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
         # the stream in order to be able to pass our user_data
+        self.txq = self.rxq = None
         if kind == 'duplex':
-            ichannels, ochannels = _sd._split(channels or _sd.default.channels[kind])
-            idtype, odtype = _sd._split(dtype or _sd.default.dtype[kind])
-            isamplesize = _sd._check(_libpa.Pa_GetSampleSize(_sd._sampleformats[idtype]))
-            osamplesize = _sd._check(_libpa.Pa_GetSampleSize(_sd._sampleformats[odtype]))
-            self.framesize = isamplesize*ichannels, osamplesize*ochannels
-        else:
-            samplesize = _sd._check( _libpa.Pa_GetSampleSize(
-                                        _sd._sampleformats[dtype or _sd.default.dtype[kind]]))
-            self.framesize = samplesize*(channels or _sd.default.channels[kind])
+            idevice, odevice = _sd._split(device)
+            ichannels, ochannels = _sd._split(channels)
+            idtype, odtype = _sd._split(dtype)
+            iparameters, idtype, isize, _ = _sd._get_stream_parameters(
+                'input', idevice, ichannels, idtype, None, None, None)
+            oparameters, odtype, osize, _ = _sd._get_stream_parameters(
+                'output', odevice, ochannels, odtype, None, None, None)
 
-        if kind == 'duplex' or kind == 'output':
-            self.txq = _pa_ringbuffer.RingBuffer(self.framesize[1] if kind=='duplex' else self.framesize, qsize)
+            self.framesize = (isize*iparameters.channelCount, 
+                              osize*oparameters.channelCount)
+            self.txq = _pa_ringbuffer.RingBuffer(self.framesize[1], qsize)
+            self.rxq = _pa_ringbuffer.RingBuffer(self.framesize[0], qsize)
         else:
-            self.txq = None
+            parameters, dtype, samplesize, _ = _sd._get_stream_parameters(
+                kind, device, channels, dtype, None, None, None)
+            self.framesize = samplesize*parameters.channelCount
+            if kind == 'output':
+                self.txq = _pa_ringbuffer.RingBuffer(self.framesize, qsize)
+            if kind == 'input':
+                self.rxq = _pa_ringbuffer.RingBuffer(self.framesize, qsize)
 
-        if kind == 'duplex' or kind == 'input':
-            self.rxq = _pa_ringbuffer.RingBuffer(self.framesize[0] if kind=='duplex' else self.framesize, qsize)
-        else:
-            self.rxq = None
-
+        # Set up the C portaudio callback
         self._callback_info = _ffi.NULL
         if kwargs.get('callback', None) is None:
             userdata = {'status': 0,
@@ -126,12 +130,15 @@ class _BufferedStreamBase(_sd._StreamBase):
             kwargs['callback'] = _ffi.addressof(_libps, 'callback')
             kwargs['wrap_callback'] = None
 
-        super(_BufferedStreamBase, self).__init__(kind=kind, blocksize=blocksize, **kwargs)
+        super(_BufferedStreamBase, self).__init__(kind, blocksize=blocksize,
+                                                  device=device,
+                                                  channels=channels,
+                                                  dtype=dtype, **kwargs)
 
         if isinstance(self._device, int):
-            self._devname = _sd.query_devices(self._device)['name']
+            self._device_name = _sd.query_devices(self._device)['name']
         else:
-            self._devname = tuple(_sd.query_devices(dev)['name'] for dev in self._device)
+            self._device_name = tuple(_sd.query_devices(dev)['name'] for dev in self._device)
 
     @property
     def status(self):
@@ -167,7 +174,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._check_callback()
 
     def __repr__(self):
-        return ("{0}({1._devname!r}, samplerate={1._samplerate:.0f}, "
+        return ("{0}({1._device_name!r}, samplerate={1._samplerate:.0f}, "
                 "channels={1._channels}, dtype={1._dtype!r}, blocksize={1._blocksize})").format(self.__class__.__name__, self)
 
 class _InputStreamMixin(object):
@@ -227,11 +234,11 @@ class _InputStreamMixin(object):
             yielder = None
 
         incframes = blocksize - overlap
-        dt = incframes / stream.samplerate
+        dt = incframes / self.samplerate
         ringbuff = self.rxq
         with self:
-            while not self._exit.is_set():
-                nframes = ringbuff.read(outbuff[overlap:], blocksize-overlap)
+            while self.active:
+                nframes = ringbuff.read(outbuff[overlap:], incframes)
                 if nframes == 0:
                     _time.sleep(dt)
                     continue
@@ -245,15 +252,15 @@ class _InputStreamMixin(object):
 
 class BufferedInputStream(_InputStreamMixin, _BufferedStreamBase):
     def __init__(self, **kwargs):
-        super(BufferedInputStream).__init__(self, kind='input', **kwargs)
+        super(BufferedInputStream).__init__(self, 'input', **kwargs)
 
 class BufferedOutputStream(_BufferedStreamBase):
     def __init__(self, **kwargs):
-        super(BufferedOutputStream).__init__(self, kind='output', **kwargs)
+        super(BufferedOutputStream).__init__(self, 'output', **kwargs)
 
 class BufferedStream(BufferedInputStream, BufferedOutputStream):
     def __init__(self, **kwargs):
-        _BufferedStreamBase.__init__(self, kind='duplex', **kwargs)
+        _BufferedStreamBase.__init__(self, 'duplex', **kwargs)
 
 class _ThreadedStreamBase(_BufferedStreamBase):
     """
@@ -293,11 +300,11 @@ class _ThreadedStreamBase(_BufferedStreamBase):
     rxt : Thread object
         Daemon thread object that handles reading data from the input ring buffer.
     """
-    def __init__(self, blocksize=None, qreader=None, qwriter=None, kind='duplex', **kwargs):
+    def __init__(self, kind, qreader=None, qwriter=None, blocksize=None, **kwargs):
         if qreader is None and qwriter is None:
             raise ValueError("No qreader or qwriter function given.")
 
-        super(_ThreadedStreamBase, self).__init__(kind=kind, blocksize=blocksize, **kwargs)
+        super(_ThreadedStreamBase, self).__init__(kind, blocksize=blocksize, **kwargs)
 
         self._exit = _threading.Event()
         self._exc = _queue.Queue()
@@ -390,15 +397,15 @@ class _ThreadedStreamBase(_BufferedStreamBase):
 
 class ThreadedInputStream(_InputStreamMixin, _ThreadedStreamBase):
     def __init__(self, **kwargs):
-        super(ThreadedInputStream).__init__(self, kind='input', **kwargs)
+        super(ThreadedInputStream).__init__(self, 'input', **kwargs)
 
 class ThreadedOutputStream(_ThreadedStreamBase):
     def __init__(self, **kwargs):
-        super(ThreadedOutputStream).__init__(self, kind='output', **kwargs)
+        super(ThreadedOutputStream).__init__(self, 'output', **kwargs)
 
 class ThreadedStream(ThreadedInputStream, ThreadedOutputStream):
     def __init__(self, **kwargs):
-        _ThreadedStreamBase.__init__(self, kind='duplex', **kwargs)
+        _ThreadedStreamBase.__init__(self, 'duplex', **kwargs)
 
 class _SoundFileStreamBase(_ThreadedStreamBase):
     """
@@ -438,7 +445,7 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
     qreader, qwriter, kind, fileblocksize, blocksize, **kwargs
         Additional parameters to pass to ThreadedStreamBase.
     """
-    def __init__(self, inpf=None, outf=None, qreader=None, qwriter=None, kind='duplex', sfkwargs={}, fileblocksize=None, blocksize=None, **kwargs):
+    def __init__(self, kind, inpf=None, outf=None, qreader=None, qwriter=None, sfkwargs={}, fileblocksize=None, blocksize=None, **kwargs):
         # We're playing an audio file, so we can safely assume there's no need
         # to clip
         if kwargs.get('clip_off', None) is None:
@@ -470,9 +477,10 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
         if outf is not None and qreader is None:
             qreader = self._soundfilewriter
 
-        super(_SoundFileStreamBase, self).__init__(qreader=qreader,
-                                                  qwriter=qwriter, kind=kind,
-                                                  blocksize=blocksize, **kwargs)
+        super(_SoundFileStreamBase, self).__init__(kind, qreader=qreader,
+                                                   qwriter=qwriter,
+                                                   blocksize=blocksize,
+                                                   **kwargs)
 
         # Try and determine the file extension here; we need to know it if we
         # want to try and set a default subtype for the output
@@ -578,7 +586,7 @@ class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
         Additional parameters to pass to SoundFileStreamBase.
     """
     def __init__(self, outf, sfkwargs={}, fileblocksize=None, **kwargs):
-        super(SoundFileInputStream, self).__init__(outf=outf, kind='input',
+        super(SoundFileInputStream, self).__init__('input', outf=outf,
                                                    sfkwargs=sfkwargs,
                                                    fileblocksize=fileblocksize,
                                                    **kwargs)
@@ -594,9 +602,10 @@ class SoundFileOutputStream(_SoundFileStreamBase):
         samplerate and number of channels for the audio stream.
     """
     def __init__(self, inpf, qsize=PA_QSIZE, fileblocksize=None, **kwargs):
-        super(SoundFileOutputStream, self).__init__(inpf=inpf, qsize=qsize,
+        super(SoundFileOutputStream, self).__init__('output', inpf=inpf,
+                                                    qsize=qsize,
                                                     fileblocksize=fileblocksize,
-                                                    kind='output', **kwargs)
+                                                    **kwargs)
 
 class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
     """
@@ -610,9 +619,9 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
         if inpf is None and outf is None:
             raise ValueError("No input or output file given.")
 
-        _SoundFileStreamBase.__init__(self, inpf=inpf, outf=outf, qsize=qsize,
+        _SoundFileStreamBase.__init__(self, 'duplex', inpf=inpf, outf=outf, qsize=qsize,
                                       fileblocksize=fileblocksize,
-                                      sfkwargs=sfkwargs, kind='duplex', **kwargs)
+                                      sfkwargs=sfkwargs, **kwargs)
 
 def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False, qwriter=None, streamclass=None, **kwargs):
     """
@@ -721,6 +730,12 @@ Output recording file, or, use the special designator '-' for playback only.''')
     parser.add_argument("-q", "--qsize", type=posint, default=PA_QSIZE,
 help="File transmit buffer size (in units of frames). Increase for smaller blocksizes.")
 
+    parser.add_argument("-B", "--file-blocksize", type=int,
+                         help='''\
+Only used for special cases where you want to set the file block size
+differently than the portaudio buffer size. You most likely don't need to use
+this option. (In units of frames).''')
+
     devopts = parser.add_argument_group("I/O device stream options")
 
     devopts.add_argument("-d", "--device", type=devtype,
@@ -729,12 +744,6 @@ Audio device name expression or index number. Defaults to the PortAudio default 
 
     devopts.add_argument("-b", "--blocksize", type=int,
                          help="PortAudio buffer size and file block size (in units of frames).")
-
-    devopts.add_argument("-B", "--file-blocksize", type=int,
-                         help='''\
-Only used for special cases where you want to set the file block size
-differently than the portaudio buffer size. You most likely don't need to use
-this option. (In units of frames).''')
 
     devopts.add_argument("-f", "--format", dest='dtype',
                          choices=_sd._sampleformats.keys(),
@@ -756,7 +765,7 @@ Output file format options''')
 Output file type. Typically this is determined from the file extension, but it
 can be manually overridden here.''')
 
-    fileopts.add_argument("-e", "--encoding", choices=_sf.available_subtypes(),
+    fileopts.add_argument("-e", dest="encoding", choices=_sf.available_subtypes(),
                           type=str.upper,
                           help="Sample format encoding.")
 
