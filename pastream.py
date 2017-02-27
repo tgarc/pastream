@@ -188,6 +188,15 @@ class _BufferedStreamBase(_sd._StreamBase):
         msg = _ffi.string(self._callback_info.errorMsg)
         if len(msg):
             raise AudioBufferError(msg)
+        if self.status._flags & 0xF:
+            raise AudioBufferError(str(self.status))
+
+    def start(self):
+        self._aborted.clear()
+        if self.txq is not None:
+            while self.txq.write_available and not self._aborted.is_set():
+                _time.sleep(0.005)
+        super(_BufferedStreamBase, self).start()
 
     def abort(self):
         super(_BufferedStreamBase, self).abort()
@@ -372,30 +381,22 @@ class _ThreadedStreamBase(_BufferedStreamBase):
             self._set_exception()
 
             # suppress the exception in this child thread
-            try:    self.abort()
-            except: pass
+            self._aborted.set()
+            _sd._StreamBase.abort(self)
 
     def _stopiothreads(self):
         currthread = _threading.current_thread()
-        aborted = self._aborted.is_set()
-
         if self.rxt is not None and self.rxt.is_alive() and self.rxt != currthread:
             self.rxt.join()
-
         if self.txt is not None and self.txt.is_alive() and self.txt != currthread:
-            self._aborted.set()
             self.txt.join()
-            if not aborted: self._aborted.clear()
 
     def start(self):
-        self._aborted.clear()
         if self.txt is not None:
             self.txt.start()
-            while self.txq.write_available and self.txt.is_alive():
-                _time.sleep(0.001)
+        super(_ThreadedStreamBase, self).start()
         if self.rxt is not None:
             self.rxt.start()
-        super(_ThreadedStreamBase, self).start()
 
     def abort(self):
         try:
@@ -548,7 +549,7 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
         while not stream._aborted.is_set():
             # for thread safety, check the stream is active *before* reading
-            active = self.active 
+            active = stream.active 
             nframes = ringbuff.read(buff)
             if nframes == 0:
                 # we've read everything and the stream is done; seeya!
@@ -569,9 +570,21 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
             framesize = stream.framesize
             dtype = stream.dtype
 
-        dt = stream.fileblocksize / stream.samplerate
+        # prime the buffer
+        availframes = ringbuff.write_available
+        buff = stream.inp_fh.buffer_read(availframes, dtype=dtype)
+        ringbuff.write(buff)
+        if len(buff)//framesize < availframes:
+            return
+
+        # wait for the stream to start
+        while not stream.active:
+            if stream._aborted.is_set(): return
+            _time.sleep(0.005)
+
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
-        while not stream._aborted.is_set():
+        dt = stream.fileblocksize / stream.samplerate
+        while stream.active:
             nframes = min(ringbuff.write_available, stream.fileblocksize)
             if nframes == 0:
                 # wait for space to free up on the buffer

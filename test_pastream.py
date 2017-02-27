@@ -50,11 +50,11 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     # 'tee' the transmit queue writer so that we can recall any input and match
     # it to the output. We make it larger than usual (4M frames) to allow for
     # extra slack
-    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 24)
-    stream.txq.__write = stream.txq.write
-    def teewrite(*args, **kwargs):
-        nframes1 = inpbuff.write(*args, **kwargs)
-        nframes2 = stream.txq.__write(*args, **kwargs)
+    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 18)
+    writer = stream.txq.write
+    def teewrite(buff, size=-1):
+        nframes1 = writer(buff, size)
+        nframes2 = inpbuff.write(buff, nframes1)
         assert nframes1 == nframes2, "Ran out of temporary buffer space. Use a larger qsize"
         return nframes1
     stream.txq.write = teewrite
