@@ -22,7 +22,7 @@ elif system == 'Darwin':
     raise Exception("Currently no support for Mac devices")
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
-    DEVICE_KWARGS = {'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512, 'channels': 1, 'samplerate':48000}
+    DEVICE_KWARGS = {'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512, 'channels': 8, 'samplerate':48000}
 
 if 'SOUNDDEVICE_DEVICE_NAME' in os.environ:
     DEVICE_KWARGS['device'] = os.environ['SOUNDDEVICE_DEVICE_NAME']
@@ -52,11 +52,11 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     # extra slack
     inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 24)
     stream.txq.__write = stream.txq.write
-    def teewrite(buff, size=-1):
-        nbuff = inpbuff.write(buff, size=size)
-        nframes = stream.txq.__write(buff, size=size)
-        assert nbuff == nframes, "Ran out of temporary buffer space. Use a larger qsize"
-        return nframes
+    def teewrite(*args, **kwargs):
+        nframes1 = inpbuff.write(*args, **kwargs)
+        nframes2 = stream.txq.__write(*args, **kwargs)
+        assert nframes1 == nframes2, "Ran out of temporary buffer space. Use a larger qsize"
+        return nframes1
     stream.txq.write = teewrite
 
     delay = -1
