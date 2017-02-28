@@ -8,15 +8,12 @@ for line in open('pastream.py'):
         exec(line)
         break
 
-with open('README.rst') as readme:
-    long_description=readme.read()
-
 setup(name='pastream',
       version=__version__,
       author='Thomas J. Garcia',
       url='http://github.com/tgarc/pastream',
       author_email='toemossgarcia@gmail.com',
-      long_description=long_description,
+      long_description=open('README.rst').read(),
       entry_points={'console_scripts': ['pastream = pastream:_main']},
       cffi_modules=["pastream_build.py:ffibuilder"],
       install_requires=[

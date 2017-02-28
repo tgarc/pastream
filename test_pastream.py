@@ -13,16 +13,17 @@ import platform
 import pastream as ps
 import pa_ringbuffer
 
-
 # Set up the platform specific device
 system = platform.system()
 if system == 'Windows':
-    DEVICE_KWARGS = {'device': 'ASIO4ALL v2, ASIO', 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate':48000}
+    DEVICE_KWARGS = { 'device': 'ASIO4ALL v2, ASIO', 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate':48000 }
 elif system == 'Darwin':
     raise Exception("Currently no support for Mac devices")
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
-    DEVICE_KWARGS = {'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512, 'channels': 8, 'samplerate':48000}
+    DEVICE_KWARGS = { 'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512, 'channels': 8, 'samplerate':48000 }
+
+#DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
 
 if 'SOUNDDEVICE_DEVICE_NAME' in os.environ:
     DEVICE_KWARGS['device'] = os.environ['SOUNDDEVICE_DEVICE_NAME']
@@ -81,10 +82,10 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
             npt.assert_array_equal(inp, out, "Loopback data mismatch")
             mframes += readframes
         nframes += len(outframes)
-
     assert delay != -1, "Preamble not found or was corrupted"
 
-    print("Matched %d of %d frames; Initial delay of %d frames" % (mframes, nframes, delay))
+    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %d unaccounted for extra frames" 
+            % (mframes, nframes, delay, inpbuff.read_available, nframes - stream.frame_count))
 
 def gen_random(rdm_fh, nseconds, elementsize):
     """

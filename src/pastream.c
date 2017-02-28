@@ -27,13 +27,8 @@ int callback(
   }
 
   stream->status |= status;
-  if (stream->status&0xF) {
-    if (stream->status & paInputUnderflow)  { strcpy(stream->errorMsg, "Input underflow!"); }
-    if (stream->status & paInputOverflow)   { strcpy(stream->errorMsg, "Input overflow!"); }
-    if (stream->status & paOutputUnderflow) { strcpy(stream->errorMsg, "Output underflow!"); }
-    if (stream->status & paOutputOverflow)  { strcpy(stream->errorMsg, "Output overflow!"); }
+  if (stream->status&0xF)
     return paAbort;
-  }
 
   if (stream->duplexity & I_MODE) {
     iframes = PaUtil_WriteRingBuffer(stream->rxq, in_data, frame_count);
