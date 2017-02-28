@@ -11,8 +11,10 @@ import time
 import tempfile
 import platform
 import pastream as ps
-import rtmixer
-
+try:
+    import queue
+except ImportError:
+    import Queue as queue
 
 # Set up the platform specific device
 system = platform.system()
@@ -53,14 +55,12 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     # 'tee' the transmit queue writer so that we can recall any input and match
     # it to the output. We make it larger than usual (4MB) too allow for extra
     # slack
-    inpbuff = rtmixer.RingBuffer(stream.framesize[1], 1 << 24)
-    stream.txq.__write = stream.txq.write
-    def teewrite(buff, size=-1):
-        nbuff = inpbuff.write(buff, size=size)
-        nframes = stream.txq.__write(buff, size=size)
-        assert nbuff == nframes, "Ran out of temporary buffer space. Use a larger qsize"
-        return nframes
-    stream.txq.write = teewrite
+    inpbuff = queue.Queue()
+    putter = stream.txq.put
+    def teewrite(item, *args, **kwargs):
+        inpbuff.put(buff)
+        putter(buff, *args, **kwargs)
+    stream.txq.put = teewrite
 
     unsigned_dtype = 'u'+stream.dtype[1]
     nframes = mframes = 0
