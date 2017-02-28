@@ -138,6 +138,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         # This event is used to notify the event that the stream has
         # been aborted. We can use this to abort writing of the ringbuffer
         self._aborted = _threading.Event()
+        self._started = _threading.Event()
 
         if isinstance(self._device, int):
             self._device_name = _sd.query_devices(self._device)['name']
@@ -169,6 +170,14 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._exc.put(exc)
 
     @property
+    def started(self):
+        return self._started.is_set()
+
+    @property
+    def aborted(self):
+        return self._aborted.is_set()
+    
+    @property
     def status(self):
         return _sd.CallbackFlags(int(self._callback_info.status))
 
@@ -192,11 +201,13 @@ class _BufferedStreamBase(_sd._StreamBase):
             raise AudioBufferError(str(self.status))
 
     def start(self):
+        self._started.clear()
         self._aborted.clear()
         if self.txq is not None:
-            while self.txq.write_available and not self._aborted.is_set():
+            while self.txq.write_available and not self.aborted:
                 _time.sleep(0.005)
         super(_BufferedStreamBase, self).start()
+        self._started.set()
 
     def abort(self):
         super(_BufferedStreamBase, self).abort()
@@ -284,7 +295,7 @@ class _InputStreamMixin(object):
         dt = incframes / self.samplerate
         ringbuff = self.rxq
         with self:
-            while not self._aborted.is_set():
+            while not self.aborted:
                 # for thread safety, check the stream is active *before* reading
                 active = self.active 
                 nframes = ringbuff.read(outbuff[overlap:], incframes)
@@ -547,7 +558,7 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
 
         dt = stream.fileblocksize / stream.samplerate
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
-        while not stream._aborted.is_set():
+        while not stream.aborted:
             # for thread safety, check the stream is active *before* reading
             active = stream.active 
             nframes = ringbuff.read(buff)
@@ -570,21 +581,9 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
             framesize = stream.framesize
             dtype = stream.dtype
 
-        # prime the buffer
-        availframes = ringbuff.write_available
-        buff = stream.inp_fh.buffer_read(availframes, dtype=dtype)
-        ringbuff.write(buff)
-        if len(buff)//framesize < availframes:
-            return
-
-        # wait for the stream to start
-        while not stream.active:
-            if stream._aborted.is_set(): return
-            _time.sleep(0.005)
-
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
         dt = stream.fileblocksize / stream.samplerate
-        while stream.active:
+        while not (stream.aborted or (stream.started and not stream.active)):
             nframes = min(ringbuff.write_available, stream.fileblocksize)
             if nframes == 0:
                 # wait for space to free up on the buffer
