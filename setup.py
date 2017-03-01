@@ -19,12 +19,13 @@ setup(name='pastream',
       install_requires=[
           'soundfile>=0.9.0',
           'sounddevice>=0.3.7',
-          'pa-ringbuffer'],
+          'pa-ringbuffer'
+          ],
       setup_requires=["cffi>=1.0.0"],
       tests_require=['pytest>=3.0', 'numpy'],
       extras_require={'numpy': 'numpy'},
       dependency_links=[
-          "git+https://github.com/mgeier/python-pa-ringbuffer.git/@master#egg=pa-ringbuffer"
+          "git+https://github.com/mgeier/python-pa-ringbuffer.git@master#egg=pa-ringbuffer-0"
           ],
       packages=find_packages(),
       include_package_data=True,

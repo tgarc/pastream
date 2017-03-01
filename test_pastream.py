@@ -2,16 +2,17 @@
 Loopback tests for pastream.
 """
 from __future__ import print_function
-import os, sys
-import numpy as np
-import soundfile as sf
+import os, platform
 import pytest
-import numpy.testing as npt
 import time
 import tempfile
-import platform
+import numpy as np
+import numpy.testing as npt
+import soundfile as sf
+import sounddevice as sd
 import pastream as ps
 import pa_ringbuffer
+
 
 # Set up the platform specific device
 system = platform.system()
@@ -48,13 +49,12 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
-    ps.refresh()
     stream = ps.SoundFileStream(inp_fh, **devargs)
 
     # 'tee' the transmit queue writer so that we can recall any input and match
     # it to the output. We make it larger than usual (4M frames) to allow for
     # extra slack
-    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 18)
+    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 24)
     writer = stream.txq.write
     def teewrite(buff, size=-1):
         nframes1 = writer(buff, size)
@@ -140,23 +140,32 @@ class MyException(Exception):
     pass
 
 def test_deferred_exception_handling():
-    ps.refresh()
-    with pytest.raises(MyException):
+    msg = "BOO-urns!"
+    with pytest.raises(MyException) as excinfo:
         strm = ps.BufferedOutputStream(buffersize=1024, **DEVICE_KWARGS)
         strm.txq.write(bytearray(1024*strm.framesize))
         with strm:
-            strm._set_exception(MyException("BOO-urns!"))
+            strm._set_exception(MyException(msg))
+    assert str(excinfo.value) == msg
 
 def test_threaded_deferred_exception_handling():
+    rxmsg = "BOO!"
+    txmsg = "BOO-urns!"
+
     def qwriter(stream, ringbuff):
-        raise MyException("BOO!")
+        raise MyException(txmsg)
 
     def qreader(stream, ringbuff):
-        raise MyException("BOO-uuurns")
+        raise MyException(rxmsg)
 
-    ps.refresh()
-    with pytest.raises(MyException):
-        strm = ps.ThreadedStream(buffersize=1024, qwriter=qwriter, **DEVICE_KWARGS)
+    with pytest.raises(MyException) as excinfo:
+        strm = ps.ThreadedStream(buffersize=1024, qwriter=qwriter, qreader=qreader, **DEVICE_KWARGS)
         strm.txq.write(bytearray(1024*strm.framesize))
         with strm:
             pass
+    assert str(excinfo.value) == txmsg
+
+    # The reader exception should still be in the exception queue
+    with pytest.raises(MyException) as excinfo:
+        strm._raise_exceptions()
+    assert str(excinfo.value) == rxmsg

@@ -45,6 +45,7 @@ PA_BUFFERSIZE = 1<<16 # Default number of frames to buffer i/o to portaudio call
 class AudioBufferError(Exception):
     pass
 
+
 class _BufferedStreamBase(_sd._StreamBase):
     """
     This class adds a python Queue for reading and writing audio data. This
@@ -172,12 +173,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         raise exc
 
     def _set_exception(self, exc=None):
-        # ignore subsequent exceptions
-        if not self._exc.empty():
-            return
-        if exc is None:
-            exc = _sys.exc_info()
-        self._exc.put(exc)
+        self._exc.put(exc or _sys.exc_info())
 
     @property
     def started(self):
@@ -215,8 +211,6 @@ class _BufferedStreamBase(_sd._StreamBase):
             raise AudioBufferError(str(self.status))
 
     def start(self):
-        self._started.clear()
-        self._aborted.clear()
         if self.txq is not None:
             while self.txq.write_available and not self.aborted:
                 _time.sleep(0.005)
@@ -514,11 +508,6 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
     def __init__(self, kind, inpf=None, outf=None, qreader=None,
                  qwriter=None, sfkwargs={}, fileblocksize=None,
                  blocksize=None, **kwargs):
-        # We're playing an audio file, so we can safely assume there's no need
-        # to clip
-        if kwargs.get('clip_off', None) is None:
-            kwargs['clip_off'] = True
-
         if not (fileblocksize or blocksize):
             raise ValueError("One or both of fileblocksize and blocksize must be non-zero.")
 
@@ -526,24 +515,25 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
         # the input/output is None which determines whether qreader/qwriter
         # functions should be registered
         self._inpf = inpf
-        if inpf is not None:
-            inp_fh = inpf
-            if not isinstance(inpf, _sf.SoundFile):
-                inp_fh = _sf.SoundFile(inpf)
+        if self._inpf is not None:
+            self.inp_fh = self._inpf
+            if not isinstance(self._inpf, _sf.SoundFile):
+                self.inp_fh = _sf.SoundFile(self._inpf)
             if kwargs.get('samplerate', None) is None:
-                kwargs['samplerate'] = inp_fh.samplerate
+                kwargs['samplerate'] = self.inp_fh.samplerate
             if kwargs.get('channels', None) is None:
-                kwargs['channels'] = inp_fh.channels
+                kwargs['channels'] = self.inp_fh.channels
             if qwriter is None:
                 qwriter = self._soundfilereader
         else:
-            inp_fh = inpf
+            self.inp_fh = self._inpf
 
         # We need to set the qreader here; output file parameters will known
         # once we open the stream
         self._outf = outf
         if outf is not None and qreader is None:
             qreader = self._soundfilewriter
+        self.out_fh = None
 
         super(_SoundFileStreamBase, self).__init__(kind, qreader=qreader,
                                                    qwriter=qwriter,
@@ -560,25 +550,23 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
         # If the output file hasn't already been opened, we open it here using
         # the input file and output stream settings, plus any user supplied
         # arguments
-        if outf is not None and not isinstance(outf, _sf.SoundFile):
-            if inp_fh is not None:
+        if self._outf is not None and not isinstance(self._outf, _sf.SoundFile):
+            if self.inp_fh is not None:
                 if sfkwargs.get('endian', None) is None:
-                    sfkwargs['endian'] = inp_fh.endian
-                if (sfkwargs.get('format', outext) == inp_fh.format.lower()
+                    sfkwargs['endian'] = self.inp_fh.endian
+                if (sfkwargs.get('format', outext) == self.inp_fh.format.lower()
                     and sfkwargs.get('subtype', None) is None):
-                    sfkwargs['subtype'] = inp_fh.subtype
+                    sfkwargs['subtype'] = self.inp_fh.subtype
             if sfkwargs.get('channels', None) is None:
                 sfkwargs['channels'] = self.channels[0] if kind == 'duplex' else self.channels
             if sfkwargs.get('samplerate', None) is None:
                 sfkwargs['samplerate'] = int(self.samplerate)
             if sfkwargs.get('mode', None) is None:
                 sfkwargs['mode'] = 'w+b'
-            out_fh = _sf.SoundFile(outf, **sfkwargs)
+            self.out_fh = _sf.SoundFile(self._outf, **sfkwargs)
         else:
-            out_fh = outf
+            self.out_fh = self._outf
 
-        self.inp_fh = inp_fh
-        self.out_fh = out_fh
         self.fileblocksize = fileblocksize or self.blocksize
 
     # Default handler for writing input from a ThreadedStream to a SoundFile object
@@ -819,8 +807,10 @@ this option. (In units of frames).''')
                          help='''\
 Audio device name expression or index number. Defaults to the PortAudio default device.''')
 
-    devopts.add_argument("-b", "--blocksize", type=int, default=1024,
-                         help="PortAudio buffer size and file block size (in units of frames).")
+    devopts.add_argument("-b", "--blocksize", type=int,
+                         help='''\
+PortAudio buffer size in units of frames. Defaults to 1024 if neither
+this or --file-blocksize are specified.''')
 
     devopts.add_argument("-f", "--format", dest='dtype',
                          choices=_sd._sampleformats.keys(),
@@ -856,6 +846,9 @@ def _main(argv=None):
     parser = _get_parser()
     args = parser.parse_args(argv)
 
+    if args.blocksize is None and args.fileblocksize is None:
+        args.blocksize = 1024
+
     sfkwargs=dict()
     stream = SoundFileStreamFactory(args.input, args.output, buffersize=args.qsize,
                                     sfkwargs={
@@ -870,7 +863,8 @@ def _main(argv=None):
                                     samplerate=args.samplerate,
                                     blocksize=args.blocksize)
 
-    statline = "\r{:8.3f}s {:10d} frames processed, {:>10s} frames available for writing, {:>10s} frames queued for reading\r"
+    statline = '''\
+\r{:8.3f}s {:10d} frames processed, {:>10s} frames free, {:>10s} frames queued\r'''
     print("<-", stream.inp_fh if stream.inp_fh is not None else 'null')
     print("--", stream)
     print("->", stream.out_fh if stream.out_fh is not None else 'null')
