@@ -21,7 +21,7 @@ elif system == 'Darwin':
     raise Exception("Currently no support for Mac devices")
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
-    DEVICE_KWARGS = { 'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512, 'channels': 8, 'samplerate':48000 }
+    DEVICE_KWARGS = { 'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512, 'channels': 8, 'samplerate':48000}
 
 #DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
 
@@ -46,12 +46,12 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
-    stream = ps.SoundFileStream(inp_fh, **devargs)
+    stream = ps.SoundFileStream(inp_fh, pad=2048, **devargs)
 
     # 'tee' the transmit queue writer so that we can recall any input and match
     # it to the output. We make it larger than usual (4M frames) to allow for
     # extra slack
-    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 18)
+    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 24)
     writer = stream.txq.write
     def teewrite(buff, size=-1):
         nframes1 = writer(buff, size)
@@ -84,8 +84,8 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
         nframes += len(outframes)
     assert delay != -1, "Preamble not found or was corrupted"
 
-    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %d unaccounted for extra frames" 
-            % (mframes, nframes, delay, inpbuff.read_available, nframes - stream.frame_count))
+    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
+          % (mframes, nframes, delay, inpbuff.read_available))
 
 def gen_random(rdm_fh, nseconds, elementsize):
     """

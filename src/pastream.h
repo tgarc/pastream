@@ -7,6 +7,8 @@ typedef enum duplexity {
 typedef struct Py_PsBufferedStream {
   PaStreamCallbackFlags status;
   unsigned long frame_count;
+  unsigned long nframes;
+  unsigned long padframes;
   duplexity_t duplexity;
   PaUtilRingBuffer* rxq;
   PaUtilRingBuffer* txq;

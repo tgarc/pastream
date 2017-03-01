@@ -28,13 +28,12 @@ import sys as _sys
 import sounddevice as _sd
 import soundfile as _sf
 import pa_ringbuffer as _pa_ringbuffer
-from _pastream import ffi as _ffi, lib as _libps
+from _pastream import ffi as _ffi, lib as _lib
 try:
     import numpy as _np
 except:
     _np = None
-_libpa = _sd._lib
-_ffirb = _pa_ringbuffer._ffi
+
 
 __version__ = '0.0.0'
 __usage__ = "%(prog)s [options] [-d device] input output"
@@ -85,7 +84,7 @@ class _BufferedStreamBase(_sd._StreamBase):
     framesize : int
         The audio frame size in bytes. Equivalent to channels*samplesize.
     """
-    def __init__(self, kind, qsize=PA_QSIZE, blocksize=None, device=None,
+    def __init__(self, kind, nframes=None, pad=None, qsize=PA_QSIZE, blocksize=None, device=None,
                  channels=None, dtype=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
         # the stream in order to be able to pass our user_data
@@ -118,6 +117,8 @@ class _BufferedStreamBase(_sd._StreamBase):
             userdata = {'status': 0,
                         'duplexity': ['input', 'output', 'duplex'].index(kind) + 1,
                         'frame_count': 0,
+                        'nframes': nframes or 0,
+                        'padframes': pad or 0,
                         'errorMsg': b'',
                         'lastTime': 0 }
             if self.rxq is not None:
@@ -127,7 +128,7 @@ class _BufferedStreamBase(_sd._StreamBase):
                 
             self._callback_info = _ffi.new("Py_PsBufferedStream*", userdata)
             kwargs['userdata'] = self._callback_info
-            kwargs['callback'] = _ffi.addressof(_libps, 'callback')
+            kwargs['callback'] = _ffi.addressof(_lib, 'callback')
             kwargs['wrap_callback'] = None
 
         super(_BufferedStreamBase, self).__init__(kind, blocksize=blocksize,
@@ -177,6 +178,10 @@ class _BufferedStreamBase(_sd._StreamBase):
     def aborted(self):
         return self._aborted.is_set()
     
+    @property
+    def nframes(self):
+        return int(self._callback_info.nframes)
+
     @property
     def status(self):
         return _sd.CallbackFlags(int(self._callback_info.status))
@@ -300,7 +305,7 @@ class _InputStreamMixin(object):
                 active = self.active 
                 nframes = ringbuff.read(outbuff[overlap:], incframes)
                 if nframes == 0:
-                    if not active: break
+                    if self.started and not active: break
                     _time.sleep(dt)
                     continue
 
@@ -405,9 +410,9 @@ class _ThreadedStreamBase(_BufferedStreamBase):
     def start(self):
         if self.txt is not None:
             self.txt.start()
-        super(_ThreadedStreamBase, self).start()
         if self.rxt is not None:
             self.rxt.start()
+        super(_ThreadedStreamBase, self).start()
 
     def abort(self):
         try:
@@ -426,7 +431,6 @@ class _ThreadedStreamBase(_BufferedStreamBase):
             super(_ThreadedStreamBase, self).close()
         finally:
             self._stopiothreads()
-
 
 class ThreadedInputStream(_InputStreamMixin, _ThreadedStreamBase):
     def __init__(self, **kwargs):
@@ -781,7 +785,7 @@ this option. (In units of frames).''')
                          help='''\
 Audio device name expression or index number. Defaults to the PortAudio default device.''')
 
-    devopts.add_argument("-b", "--blocksize", type=int,
+    devopts.add_argument("-b", "--blocksize", type=int, default=1024,
                          help="PortAudio buffer size and file block size (in units of frames).")
 
     devopts.add_argument("-f", "--format", dest='dtype',
