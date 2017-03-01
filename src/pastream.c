@@ -52,13 +52,18 @@ int callback(
                 stream->nframes = stream->frame_count + oframes + stream->padframes;
 
             if (stream->nframes > 0 && stream->frame_count + frame_count > stream->nframes) {
-              frame_count = stream->nframes - stream->frame_count;
-              returnCode = paComplete;
+                frame_count = stream->nframes - stream->frame_count;
+                returnCode = paComplete;
             }
         }
     }
 
-    if (stream->duplexity & I_MODE) {
+    if (stream->duplexity & I_MODE && stream->frame_count + frame_count > stream->offset) {
+        if (stream->offset > 0 && stream->frame_count < stream->offset) {
+            frame_count -= stream->offset - stream->frame_count;
+            stream->frame_count += stream->offset - stream->frame_count;
+        }
+
         iframes = PaUtil_WriteRingBuffer(stream->rxq, in_data, frame_count);
         if (iframes < frame_count) {
             strcpy(stream->errorMsg, "Receive queue is full.");

@@ -7,12 +7,13 @@ typedef enum duplexity {
 typedef struct Py_PsBufferedStream {
   PaStreamCallbackFlags status;
   unsigned long frame_count;
-  unsigned long nframes;
-  unsigned long padframes;
-  duplexity_t duplexity;
-  PaUtilRingBuffer* rxq;
-  PaUtilRingBuffer* txq;
-  char errorMsg[120];
+  unsigned long nframes;        // Number of frames to play/record (0 means unlimited)
+  unsigned long padframes;      // Number of zero frames to pad the input with
+  unsigned long offset;         // Number of frames to skip from beginning of recordings
+  duplexity_t duplexity;        
+  PaUtilRingBuffer* rxq;        // Receive buffer
+  PaUtilRingBuffer* txq;        // Transmit buffer
+  char errorMsg[120];           // Reserved for errors raised in the audio callback
   PaTime max_dt, min_dt, lastTime;
 } Py_PsBufferedStream;
 

@@ -16,12 +16,14 @@ import pa_ringbuffer
 # Set up the platform specific device
 system = platform.system()
 if system == 'Windows':
-    DEVICE_KWARGS = { 'device': 'ASIO4ALL v2, ASIO', 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate':48000 }
+    DEVICE_KWARGS = { 'device': 'ASIO4ALL v2, ASIO', 'dtype': 'int24',
+                      'blocksize': 512, 'channels': 8, 'samplerate':48000 }
 elif system == 'Darwin':
     raise Exception("Currently no support for Mac devices")
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
-    DEVICE_KWARGS = { 'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512, 'channels': 8, 'samplerate':48000}
+    DEVICE_KWARGS = { 'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512,
+                      'channels': 8, 'samplerate':48000 }
 
 #DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
 
@@ -46,17 +48,18 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
-    stream = ps.SoundFileStream(inp_fh, pad=2048, **devargs)
+    ps.refresh()
+    stream = ps.SoundFileStream(inp_fh, **devargs)
 
     # 'tee' the transmit queue writer so that we can recall any input and match
     # it to the output. We make it larger than usual (4M frames) to allow for
     # extra slack
-    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 24)
+    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 18)
     writer = stream.txq.write
     def teewrite(buff, size=-1):
         nframes1 = writer(buff, size)
         nframes2 = inpbuff.write(buff, nframes1)
-        assert nframes1 == nframes2, "Ran out of temporary buffer space. Use a larger qsize"
+        assert nframes1 == nframes2, "Ran out of temporary buffer space. Use a larger buffersize"
         return nframes1
     stream.txq.write = teewrite
 
@@ -114,7 +117,11 @@ def test_loopback():
     elementsize = _dtype2elementsize[DEVICE_KWARGS['dtype']]
 
     rdmf = tempfile.TemporaryFile()
-    rdm_fh = sf.SoundFile(rdmf, 'w+', DEVICE_KWARGS['samplerate'], DEVICE_KWARGS['channels'], 'PCM_'+['8', '16','24','32'][elementsize-1], format='wav')
+    rdm_fh = sf.SoundFile(rdmf, 'w+', 
+                          DEVICE_KWARGS['samplerate'],
+                          DEVICE_KWARGS['channels'], 
+                          'PCM_'+['8','16','24','32'][elementsize-1],
+                          format='wav')
 
     gen_random(rdm_fh, 5, elementsize)
     rdm_fh.seek(0)
@@ -127,3 +134,29 @@ def test_loopback():
 
     shift = 8*(4-elementsize)
     assert_loopback_equal(rdm_fh, (PREAMBLE>>shift)<<shift, dtype=dtype)
+
+# For testing purposes
+class MyException(Exception):
+    pass
+
+def test_deferred_exception_handling():
+    ps.refresh()
+    with pytest.raises(MyException):
+        strm = ps.BufferedOutputStream(buffersize=1024, **DEVICE_KWARGS)
+        strm.txq.write(bytearray(1024*strm.framesize))
+        with strm:
+            strm._set_exception(MyException("BOO-urns!"))
+
+def test_threaded_deferred_exception_handling():
+    def qwriter(stream, ringbuff):
+        raise MyException("BOO!")
+
+    def qreader(stream, ringbuff):
+        raise MyException("BOO-uuurns")
+
+    ps.refresh()
+    with pytest.raises(MyException):
+        strm = ps.ThreadedStream(buffersize=1024, qwriter=qwriter, **DEVICE_KWARGS)
+        strm.txq.write(bytearray(1024*strm.framesize))
+        with strm:
+            pass
