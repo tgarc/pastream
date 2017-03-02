@@ -23,8 +23,8 @@ elif system == 'Darwin':
     raise Exception("Currently no support for Mac devices")
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
-    DEVICE_KWARGS = { 'device': 'aduplex', 'dtype': 'int32', 'blocksize': 512,
-                      'channels': 8, 'samplerate':48000 }
+    DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'blocksize': 512,
+                      'channels': 8, 'samplerate': 48000 }
 
 #DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
 
@@ -54,7 +54,7 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     # 'tee' the transmit queue writer so that we can recall any input and match
     # it to the output. We make it larger than usual (4M frames) to allow for
     # extra slack
-    inpbuff = pa_ringbuffer.RingBuffer(stream.framesize[1], 1 << 24)
+    inpbuff = pa_ringbuffer.RingBuffer(stream.txq.elementsize, stream.txq._ptr.bufferSize * 4)
     writer = stream.txq.write
     def teewrite(buff, size=-1):
         nframes1 = writer(buff, size)
@@ -123,32 +123,47 @@ def test_loopback():
                           'PCM_'+['8','16','24','32'][elementsize-1],
                           format='wav')
 
-    gen_random(rdm_fh, 5, elementsize)
-    rdm_fh.seek(0)
+    with rdm_fh:
+        gen_random(rdm_fh, 5, elementsize)
+        rdm_fh.seek(0)
 
-    dtype = DEVICE_KWARGS['dtype']
-    if DEVICE_KWARGS['dtype'] == 'int24': 
-        # Tell the OS it's a 32-bit stream and ignore the extra zeros
-        # because 24 bit streams are annoying to deal with
-        dtype = 'int32' 
+        dtype = DEVICE_KWARGS['dtype']
+        if DEVICE_KWARGS['dtype'] == 'int24': 
+            # Tell the OS it's a 32-bit stream and ignore the extra zeros
+            # because 24 bit streams are annoying to deal with
+            dtype = 'int32' 
 
-    shift = 8*(4-elementsize)
-    assert_loopback_equal(rdm_fh, (PREAMBLE>>shift)<<shift, dtype=dtype)
+        shift = 8*(4-elementsize)
+        assert_loopback_equal(rdm_fh, (PREAMBLE>>shift)<<shift, dtype=dtype)
 
 # For testing purposes
 class MyException(Exception):
     pass
 
 def test_deferred_exception_handling():
-    msg = "BOO-urns!"
-    with pytest.raises(MyException) as excinfo:
-        strm = ps.BufferedOutputStream(buffersize=1024, **DEVICE_KWARGS)
-        strm.txq.write(bytearray(1024*strm.framesize))
-        with strm:
-            strm._set_exception(MyException(msg))
-    assert str(excinfo.value) == msg
+    classes = ps.BufferedStream, ps.BufferedInputStream, ps.BufferedOutputStream
+    devices= ('aloop_input', 'aloop_output'), 'aloop_input', 'aloop_output'
+    devargs = dict(DEVICE_KWARGS)
+    del devargs['device']
+
+    for dev, cls in zip(devices, classes):
+        strm = cls(buffersize=1024, device=dev, **devargs)
+        if strm.txq is not None:
+            strm.txq.write(bytearray(1024*strm.txq.elementsize))
+        with pytest.raises(MyException) as excinfo:
+            with strm:
+                strm._set_exception(MyException("BOO-urns!"))
+        assert strm.started and strm.stopped
+        sd._terminate()
+        sd._initialize()
+        sd.query_devices()
 
 def test_threaded_deferred_exception_handling():
+    classes = ps.ThreadedStream, ps.ThreadedInputStream, ps.ThreadedOutputStream
+    devices= 'aloop_duplex', 'aloop_input', 'aloop_output'
+    devargs = dict(DEVICE_KWARGS)
+    del devargs['device']
+
     rxmsg = "BOO!"
     txmsg = "BOO-urns!"
 
@@ -158,14 +173,18 @@ def test_threaded_deferred_exception_handling():
     def qreader(stream, ringbuff):
         raise MyException(rxmsg)
 
-    with pytest.raises(MyException) as excinfo:
-        strm = ps.ThreadedStream(buffersize=1024, qwriter=qwriter, qreader=qreader, **DEVICE_KWARGS)
-        strm.txq.write(bytearray(1024*strm.framesize))
-        with strm:
-            pass
-    assert str(excinfo.value) == txmsg
+    for dev, cls in zip(devices, classes):
+        sd.query_devices()
+        strm = cls(device=dev, buffersize=1024, qwriter=qwriter, qreader=qreader, **devargs)
+        if strm.txq is not None:
+            strm.txq.write(bytearray(1024*strm.framesize))
+        with pytest.raises(MyException) as excinfo:
+            with strm:
+                pass
 
-    # The reader exception should still be in the exception queue
-    with pytest.raises(MyException) as excinfo:
-        strm._raise_exceptions()
-    assert str(excinfo.value) == rxmsg
+        assert str(excinfo.value) == txmsg
+
+        # The reader exception should still be in the exception queue
+        with pytest.raises(MyException) as excinfo:
+            strm._raise_exceptions()
+        assert str(excinfo.value) == rxmsg

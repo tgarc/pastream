@@ -1,4 +1,4 @@
-pcm.loophw00 {
+pcm.aloop_output {
   type hw
   card Loopback
   device 0
@@ -8,7 +8,7 @@ pcm.loophw00 {
   channels 8
 }
 
-pcm.loophw01 {
+pcm.aloop_input {
   type hw
   card Loopback
   device 1
@@ -18,10 +18,10 @@ pcm.loophw01 {
   channels 8
 }
 
-pcm.aduplex {
+pcm.aloop_duplex {
   type asym
-  playback.pcm "loophw00"
-  capture.pcm "loophw01"
+  playback.pcm "aloop_output"
+  capture.pcm "aloop_input"
   hint {
        show on
        description "Duplex Loopback"

@@ -18,10 +18,6 @@ try:
     import Queue as _queue
 except ImportError:
     import queue as _queue
-try:
-    _basestring = basestring
-except NameError:
-    _basestring = (str, bytes)
 import threading as _threading
 import time as _time
 import sys as _sys
@@ -128,6 +124,7 @@ class _BufferedStreamBase(_sd._StreamBase):
                         'nframes': nframes,
                         'padframes': pad,
                         'offset': offset,
+                        'call_count': 0,
                         'errorMsg': b'',
                         'lastTime': 0 }
             if self.rxq is not None:
@@ -240,10 +237,9 @@ class _BufferedStreamBase(_sd._StreamBase):
             self._check_callback()
 
     def __repr__(self):
-        return """\
-        {0}({1._device_name!r}, samplerate={1._samplerate:.0f},
-        channels={1._channels}, dtype={1._dtype!r},blocksize={1._blocksize})\
-        """.format(self.__class__.__name__, self)
+        return ("{0}({1._device_name!r}, samplerate={1._samplerate:.0f}, "
+                "channels={1._channels}, dtype={1._dtype!r}, blocksize={1._blocksize})"
+                ).format(self.__class__.__name__, self)
 
 class _InputStreamMixin(object):
     def blockstream(self, overlap=0, always_2d=False, copy=False):
@@ -622,9 +618,9 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
         try:
             super(_SoundFileStreamBase, self).close()
         finally:
-            if isinstance(self._outf, _basestring):
+            if not (self._outf is None or isinstance(self._outf, _sf.SoundFile)):
                 self.out_fh.close()
-            if isinstance(self._inpf, _basestring):
+            if not (self._inpf is None or isinstance(self._inpf, _sf.SoundFile)):
                 self.inp_fh.close()
 
 class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
@@ -773,7 +769,7 @@ def _get_parser(parser=None):
 
     def posint(intarg):
         intarg = int(intarg)
-        assert intarg > 0, "Queue size must be a positive value."
+        assert intarg > 0, "Must be a positive value."
         return intarg
 
     parser.add_argument("input", type=lambda x: None if x=='-' else x,
@@ -794,6 +790,19 @@ Output recording file, or, use the special designator '-' for playback only.''')
 
     parser.add_argument("-q", "--qsize", type=posint, default=PA_BUFFERSIZE,
 help="File transmit buffer size (in units of frames). Increase for smaller blocksizes.")
+
+    parser.add_argument("-p", "--pad", type=posint, default=0,
+                        help='''\
+Pad the input with frames of zeros. Useful to avoid truncating a full duplex
+recording.''')
+
+    parser.add_argument("-o", "--offset", type=posint, default=0,
+                        help='''\
+Drop a number of frames from the start of a recording.''')
+
+    parser.add_argument("-n", "--nframes", type=posint, default=0,
+                        help='''\
+Limit playback/capture to this many frames.''')
 
     parser.add_argument("-B", "--file-blocksize", type=int,
                          help='''\
@@ -846,11 +855,17 @@ def _main(argv=None):
     parser = _get_parser()
     args = parser.parse_args(argv)
 
-    if args.blocksize is None and args.fileblocksize is None:
+    if args.blocksize is None and args.file_blocksize is None:
         args.blocksize = 1024
+
+    if args.pad and args.nframes:
+        parser.exit(255, "Can't specify both --pad and --nframes.")
 
     sfkwargs=dict()
     stream = SoundFileStreamFactory(args.input, args.output, buffersize=args.qsize,
+                                    pad=args.pad,
+                                    offset=args.offset,
+                                    nframes=args.nframes,
                                     sfkwargs={
                                         'endian': args.endian,
                                         'subtype': args.encoding,
@@ -864,7 +879,7 @@ def _main(argv=None):
                                     blocksize=args.blocksize)
 
     statline = '''\
-\r{:8.3f}s {:10d} frames processed, {:>10s} frames free, {:>10s} frames queued\r'''
+\r{:8.3f}s {:10d} frames processed, {:>8s} frames free, {:>8s} frames queued\r'''
     print("<-", stream.inp_fh if stream.inp_fh is not None else 'null')
     print("--", stream)
     print("->", stream.out_fh if stream.out_fh is not None else 'null')
@@ -889,6 +904,8 @@ def _main(argv=None):
     finally:
         print()
 
+    print("Frames processed: %d" % stream.frame_count)
+    print("callback serviced %d times" % stream._callback_info.call_count)
     print("Delta range (ms): [ {:7.3f}, {:7.3f}]".format(1e3*(stream.min_delta), 1e3*(stream.max_delta)))
     print("Nominal: {:7.3f}".format(1e3*stream.fileblocksize/stream.samplerate))
 

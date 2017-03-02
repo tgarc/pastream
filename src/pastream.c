@@ -11,10 +11,13 @@ int callback(
     PaStreamCallbackFlags status,
     void *user_data) 
 {
-    ring_buffer_size_t iframes, oframes;
+    unsigned long nframes = frame_count;
+    ring_buffer_size_t oframes;
     Py_PsBufferedStream *stream = (Py_PsBufferedStream *) user_data;
     PaTime timedelta = timeInfo->currentTime - stream->lastTime;
     int returnCode = paContinue;
+
+    stream->call_count += 1;
 
     if (timedelta == timeInfo->currentTime) {
         stream->min_dt = timeInfo->currentTime;
@@ -29,43 +32,47 @@ int callback(
 
     stream->status |= status;
     if (stream->status&0xF)
-        return paAbort;
+        NULL;
 
-    if (stream->nframes && stream->frame_count + frame_count > stream->nframes) {
-        frame_count = stream->nframes - stream->frame_count;
+    // (1) We've surpassed nframes: this is our last callback
+    if (stream->nframes && stream->frame_count + nframes >= stream->nframes) {
+        nframes = stream->nframes - stream->frame_count;
         returnCode = paComplete;
     }
 
     if (stream->duplexity & O_MODE) {
-        oframes = PaUtil_ReadRingBuffer(stream->txq, out_data, frame_count);
-        if (oframes < frame_count) {
+        oframes = PaUtil_ReadRingBuffer(stream->txq, out_data, nframes);
+
+        // We're done reading frames! Or the writer was too slow; either way,
+        // finish up by adding some zero padding.
+        if (oframes < nframes) {
             // Fill the remainder of the output buffer with zeros
-            memset((unsigned char *) out_data + oframes * stream->txq->elementSizeBytes,
-                   0, (frame_count - oframes) * stream->txq->elementSizeBytes);
+            memset(((unsigned char *) out_data) + oframes * stream->txq->elementSizeBytes,
+                   0, 
+                   (nframes - oframes) * stream->txq->elementSizeBytes);
 
-            // This is our last callback!
-            if (!stream->nframes && !stream->padframes) {
-                stream->frame_count += oframes;
-                return paComplete;
-            }
-            else if (!stream->nframes && stream->padframes)
-                stream->nframes = stream->frame_count + oframes + stream->padframes;
-
-            if (stream->nframes > 0 && stream->frame_count + frame_count > stream->nframes) {
-                frame_count = stream->nframes - stream->frame_count;
+            // (2) We don't need no stinkin' padding; we're done here
+            if ( !(stream->nframes || stream->padframes) ) {
                 returnCode = paComplete;
+            } else if (!stream->nframes && stream->padframes) {
+                // Figure out how much additional padding to insert and set nframes
+                // equal to it
+                stream->nframes = stream->frame_count + oframes + stream->padframes;
+                // (3) We don't want to do an unncessary callback; end here
+                if (stream->frame_count + nframes >= stream->nframes) {
+                    nframes = stream->nframes - stream->frame_count;
+                    returnCode = paComplete;
+                }
             }
         }
     }
 
-    if (stream->duplexity & I_MODE && stream->frame_count + frame_count > stream->offset) {
-        if (stream->offset > 0 && stream->frame_count < stream->offset) {
-            frame_count -= stream->offset - stream->frame_count;
-            stream->frame_count += stream->offset - stream->frame_count;
+    if (stream->duplexity & I_MODE && stream->frame_count + nframes > stream->offset) {
+        if (stream->frame_count < stream->offset) {
+            nframes -= stream->offset - stream->frame_count;
         }
 
-        iframes = PaUtil_WriteRingBuffer(stream->rxq, in_data, frame_count);
-        if (iframes < frame_count) {
+        if (PaUtil_WriteRingBuffer(stream->rxq, in_data, nframes) < nframes) {
             strcpy(stream->errorMsg, "Receive queue is full.");
             return paAbort;
         }
