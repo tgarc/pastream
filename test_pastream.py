@@ -45,7 +45,57 @@ _dtype2elementsize = dict(int32=4,int24=3,int16=2,int8=1)
 vhex = lambda x: np.vectorize(('{:#0%dx}'%(x.dtype.itemsize*2+2)).format)
 tohex = lambda x: vhex(x.view('u%d'%x.dtype.itemsize))
 
-def assert_loopback_equal(inp_fh, preamble, **kwargs):
+def find_soundfile_delay(xf, preamble, dtype):
+    pos = xf.tell()
+
+    off = -1
+
+    blocksize = 2048
+    inpblocks = xf.blocks(blocksize, dtype=dtype, always_2d=True)
+    unsigned_dtype = dtype if dtype.startswith('u') else 'u'+dtype
+    for i,inpblk in enumerate(inpblocks):
+        nonzeros = np.where(inpblk[:, 0].view(unsigned_dtype) == preamble)
+        if nonzeros[0].size:
+            off = i*blocksize + nonzeros[0][0]
+            break
+
+    xf.seek(pos)
+
+    return off
+
+def assert_soundfiles_equal(inp_fh, preamble, **kwargs):
+    devargs = dict(DEVICE_KWARGS)
+    devargs.update(kwargs)
+
+    outf = tempfile.TemporaryFile()
+
+    with ps.SoundFileStream(inp_fh, outf, sfkwargs={'format':'wav'}, **devargs) as stream:
+        while stream.active: time.sleep(0.1)
+
+    outf.seek(0); inp_fh.seek(0)
+    with sf.SoundFile(outf) as out_fh:
+        delay = find_soundfile_delay(out_fh, preamble, stream.dtype[1])
+        assert delay != -1, "Test Preamble pattern not found"
+        out_fh.seek(delay)
+
+        mframes = 0
+        blocksize = 2048
+        outblocks = out_fh.blocks(blocksize, dtype=stream.dtype[1], always_2d=True)
+        unsigned_dtype = 'u%d'%stream.samplesize[1]
+        inpblk = np.zeros((blocksize, inp_fh.channels), dtype=stream.dtype[0])
+        for outblk in outblocks:
+            readframes = inp_fh.buffer_read_into(inpblk[:len(outblk)], dtype=stream.dtype[0])
+
+            inp = inpblk[:readframes].view(unsigned_dtype)
+            out = outblk.view(unsigned_dtype)
+
+            npt.assert_array_equal(inp, out, "Loopback data mismatch")
+            mframes += readframes
+
+        print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
+              % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
+
+def assert_blockstream_equal(inp_fh, preamble, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
@@ -113,7 +163,7 @@ def gen_random(rdm_fh, nseconds, elementsize):
         pattern = np.random.randint(minval, maxval+1, (rdm_fh.samplerate, rdm_fh.channels)) << shift
         rdm_fh.write(pattern.astype(np.int32))
 
-def test_loopback():
+def random_loopback_tester(asserter):
     elementsize = _dtype2elementsize[DEVICE_KWARGS['dtype']]
 
     rdmf = tempfile.TemporaryFile()
@@ -134,8 +184,14 @@ def test_loopback():
             dtype = 'int32' 
 
         shift = 8*(4-elementsize)
-        assert_loopback_equal(rdm_fh, (PREAMBLE>>shift)<<shift, dtype=dtype)
+        asserter(rdm_fh, (PREAMBLE>>shift)<<shift, dtype=dtype)
 
+def test_blockstream_loopback():
+    random_loopback_tester(assert_blockstream_equal)
+
+def test_soundfile_loopback():
+    random_loopback_tester(assert_soundfiles_equal)
+    
 # For testing purposes
 class MyException(Exception):
     pass
