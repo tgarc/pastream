@@ -24,7 +24,7 @@ elif system == 'Darwin':
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
     DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'blocksize': 512,
-                      'channels': 8, 'samplerate': 48000 }
+                      'channels': 1, 'samplerate': 48000 }
 
 #DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
 
@@ -54,7 +54,7 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
     # 'tee' the transmit queue writer so that we can recall any input and match
     # it to the output. We make it larger than usual (4M frames) to allow for
     # extra slack
-    inpbuff = pa_ringbuffer.RingBuffer(stream.txq.elementsize, stream.txq._ptr.bufferSize * 4)
+    inpbuff = pa_ringbuffer.RingBuffer(stream.txq.elementsize, len(stream.txq) * 2)
     writer = stream.txq.write
     def teewrite(buff, size=-1):
         nframes1 = writer(buff, size)
@@ -87,8 +87,8 @@ def assert_loopback_equal(inp_fh, preamble, **kwargs):
         nframes += len(outframes)
     assert delay != -1, "Preamble not found or was corrupted"
 
-    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
-          % (mframes, nframes, delay, inpbuff.read_available))
+    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %d misses" 
+          % (mframes, nframes, delay, inpbuff.read_available, stream._rmisses))
 
 def gen_random(rdm_fh, nseconds, elementsize):
     """

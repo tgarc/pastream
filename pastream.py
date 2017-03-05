@@ -24,6 +24,8 @@ import sys as _sys
 import sounddevice as _sd
 import soundfile as _sf
 import pa_ringbuffer as _pa_ringbuffer
+import traceback as _traceback
+import weakref as _weakref
 from _pastream import ffi as _ffi, lib as _lib
 try:
     import numpy as _np
@@ -60,14 +62,17 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     Parameters
     -----------
-    pad : int
-        Number of zero frames to pad the input with.
     nframes : int
-        Number of frames to play/record. (0 means unlimited).
+        Number of frames to play/record. (0 means unlimited). This does not
+        include the length of any additional padding.
+    pad : int
+        Number of zero frames to pad the output with. This has no effect on the
+        input.
     offset : int
-        Number of frames to skip from beginning of recordings.
+        Number of frames to discard from beginning of input. This has no effect
+        on the output.
     buffersize : int
-        Transmit/receive queue size in units of frames. Increase for smaller
+        Transmit/receive buffer size in units of frames. Increase for smaller
         blocksizes.
     blocksize : int
         Portaudio buffer size. If None, the Portaudio backend will automatically
@@ -117,23 +122,25 @@ class _BufferedStreamBase(_sd._StreamBase):
 
         # Set up the C portaudio callback
         self._callback_info = _ffi.NULL
+        self.__weakref = _weakref.WeakKeyDictionary()
         if kwargs.get('callback', None) is None:
+            cbinfo = _ffi.new("Py_PsCallbackInfo*", { 'call_count': 0, 'xruns': 0 } )
             userdata = {'status': 0,
                         'duplexity': ['input', 'output', 'duplex'].index(kind) + 1,
                         'frame_count': 0,
-                        'nframes': nframes,
+                        'nframes': nframes + pad if nframes else nframes,
                         'padframes': pad,
+                        'callbackInfo': cbinfo,
                         'offset': offset,
-                        'call_count': 0,
-                        'errorMsg': b'',
-                        'lastTime': 0 }
+                        'errorMsg': b'', }
             if self.rxq is not None:
                 userdata['rxq'] = _ffi.cast('PaUtilRingBuffer*', self.rxq._ptr)
             if self.txq is not None:
                 userdata['txq'] = _ffi.cast('PaUtilRingBuffer*', self.txq._ptr)
                 
-            self._callback_info = _ffi.new("Py_PsBufferedStream*", userdata)
-            kwargs['userdata'] = self._callback_info
+            self._cstream = _ffi.new("Py_PsBufferedStream*", userdata)
+            self.__weakref[self._cstream] = cbinfo
+            kwargs['userdata'] = self._cstream
             kwargs['callback'] = _ffi.addressof(_lib, 'callback')
             kwargs['wrap_callback'] = None
 
@@ -146,7 +153,9 @@ class _BufferedStreamBase(_sd._StreamBase):
         # been aborted. We can use this to abort writing of the ringbuffer
         self._aborted = _threading.Event()
         self._started = _threading.Event()
+        self._stopped = _threading.Event()
         self._exc = _queue.Queue()
+        self._rmisses = self._wmisses = 0
 
         if isinstance(self._device, int):
             self._device_name = _sd.query_devices(self._device)['name']
@@ -181,27 +190,19 @@ class _BufferedStreamBase(_sd._StreamBase):
         return self._aborted.is_set()
     
     @property
-    def nframes(self):
-        return int(self._callback_info.nframes)
+    def callback_info(self):
+        return self._cstream.callbackInfo
 
     @property
     def status(self):
-        return _sd.CallbackFlags(int(self._callback_info.status))
+        return _sd.CallbackFlags(self._cstream.status)
 
     @property
     def frame_count(self):
-        return int(self._callback_info.frame_count)
-
-    @property
-    def max_delta(self):
-        return float(self._callback_info.max_dt)
-
-    @property
-    def min_delta(self):
-        return float(self._callback_info.min_dt)
+        return self._cstream.frame_count
 
     def _check_callback(self):
-        msg = _ffi.string(self._callback_info.errorMsg)
+        msg = _ffi.string(self._cstream.errorMsg)
         if len(msg):
             raise AudioBufferError(msg)
         if self.status._flags & 0xF:
@@ -216,6 +217,7 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     def abort(self):
         super(_BufferedStreamBase, self).abort()
+        self._stopped.set()
         self._aborted.set()
         try:
             self._raise_exceptions()
@@ -224,6 +226,7 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     def stop(self):
         super(_BufferedStreamBase, self).stop()
+        self._stopped.set()
         try:
             self._raise_exceptions()
         finally:
@@ -231,6 +234,7 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     def close(self):
         super(_BufferedStreamBase, self).close()
+        self._stopped.set()
         try:
             self._raise_exceptions()
         finally:
@@ -298,8 +302,8 @@ class _InputStreamMixin(object):
             yielder = None
 
         incframes = blocksize - overlap
-        dt = incframes / self.samplerate
         ringbuff = self.rxq
+        dt = int(1e3*(incframes / float(self.samplerate))) / 1e3
         with self:
             while not self.aborted:
                 # for thread safety, check the stream is active *before* reading
@@ -307,7 +311,8 @@ class _InputStreamMixin(object):
                 nframes = ringbuff.read(outbuff[overlap:], incframes)
                 if nframes == 0:
                     if self.started and not active: break
-                    _time.sleep(dt)
+                    self._rmisses += 1
+                    self._stopped.wait(dt)
                     continue
 
                 yield yielder(outbuff[:overlap + nframes]) if copy else outbuff[:overlap + nframes]
@@ -512,9 +517,10 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
         # functions should be registered
         self._inpf = inpf
         if self._inpf is not None:
-            self.inp_fh = self._inpf
             if not isinstance(self._inpf, _sf.SoundFile):
                 self.inp_fh = _sf.SoundFile(self._inpf)
+            else:
+                self.inp_fh = self._inpf
             if kwargs.get('samplerate', None) is None:
                 kwargs['samplerate'] = self.inp_fh.samplerate
             if kwargs.get('channels', None) is None:
@@ -546,12 +552,12 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
         # If the output file hasn't already been opened, we open it here using
         # the input file and output stream settings, plus any user supplied
         # arguments
-        if self._outf is not None and not isinstance(self._outf, _sf.SoundFile):
+        if not (self._outf is None or isinstance(self._outf, _sf.SoundFile)):
             if self.inp_fh is not None:
                 if sfkwargs.get('endian', None) is None:
                     sfkwargs['endian'] = self.inp_fh.endian
-                if (sfkwargs.get('format', outext) == self.inp_fh.format.lower()
-                    and sfkwargs.get('subtype', None) is None):
+                if (sfkwargs.get('subtype', None) is None
+                    and _sf.check_format(sfkwargs.get('format', None) or outext, self.inp_fh.subtype)):
                     sfkwargs['subtype'] = self.inp_fh.subtype
             if sfkwargs.get('channels', None) is None:
                 sfkwargs['channels'] = self.channels[0] if kind == 'duplex' else self.channels
@@ -575,9 +581,11 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
             framesize = stream.framesize
             dtype = stream.dtype
 
-        dt = stream.fileblocksize / stream.samplerate
+        dt = len(ringbuff) / stream.samplerate / 2
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
         while not stream.aborted:
+            nframes = min(ringbuff.read_available, stream.fileblocksize)
+
             # for thread safety, check the stream is active *before* reading
             active = stream.active 
             nframes = ringbuff.read(buff)
@@ -585,8 +593,10 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
                 # we've read everything and the stream is done; seeya!
                 if stream.started and not active: break
                 # we're reading too fast, wait for a buffer write
-                _time.sleep(dt)
+                stream._rmisses += 1
+                stream._stopped.wait(dt)
                 continue
+
             stream.out_fh.buffer_write(buff[:nframes*framesize], dtype=dtype)
 
     # Default handler for reading input from a SoundFile object and writing it to a
@@ -600,13 +610,14 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
             framesize = stream.framesize
             dtype = stream.dtype
 
+        dt = len(ringbuff) / stream.samplerate / 2
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
-        dt = stream.fileblocksize / stream.samplerate
-        while not (stream.aborted or (stream.started and not stream.active)):
+        while not (stream.aborted or stream._stopped.is_set()):
             nframes = min(ringbuff.write_available, stream.fileblocksize)
             if nframes == 0:
+                stream._wmisses += 1
                 # wait for space to free up on the buffer
-                _time.sleep(dt)
+                stream._stopped.wait(dt)
                 continue
 
             readframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
@@ -856,16 +867,13 @@ def _main(argv=None):
     args = parser.parse_args(argv)
 
     if args.blocksize is None and args.file_blocksize is None:
-        args.blocksize = 1024
-
-    if args.pad and args.nframes:
-        parser.exit(255, "Can't specify both --pad and --nframes.")
+        args.blocksize = 512
 
     sfkwargs=dict()
     stream = SoundFileStreamFactory(args.input, args.output, buffersize=args.qsize,
+                                    nframes=args.nframes,
                                     pad=args.pad,
                                     offset=args.offset,
-                                    nframes=args.nframes,
                                     sfkwargs={
                                         'endian': args.endian,
                                         'subtype': args.encoding,
@@ -891,23 +899,31 @@ def _main(argv=None):
         nullout = 'n/a'
 
     try:
-        with stream:
-            t1 = _time.time()
-            while stream.active:
-                _time.sleep(0.1)
-                line = statline.format(_time.time()-t1, stream.frame_count,
-                                       nullinp or str(stream.txq.write_available),
-                                       nullout or str(stream.rxq.read_available))
-                _sys.stdout.write(line); _sys.stdout.flush()
+        try:
+            with stream:
+                t1 = _time.time()
+                while stream.active:
+                    _time.sleep(0.1)
+                    line = statline.format(_time.time()-t1, stream.frame_count,
+                                           nullinp or str(stream.txq.write_available),
+                                           nullout or str(stream.rxq.read_available))
+                    _sys.stdout.write(line); _sys.stdout.flush()
+        finally:
+            print()
+    except AudioBufferError as buffexc:
+        print("AudioBufferError:", buffexc, file=_sys.stderr)
     except KeyboardInterrupt:
         pass
-    finally:
-        print()
 
-    print("Frames processed: %d" % stream.frame_count)
-    print("callback serviced %d times" % stream._callback_info.call_count)
-    print("Delta range (ms): [ {:7.3f}, {:7.3f}]".format(1e3*(stream.min_delta), 1e3*(stream.max_delta)))
-    print("Nominal: {:7.3f}".format(1e3*stream.fileblocksize/stream.samplerate))
+    cbinfo = stream.callback_info
+    print("Callback info:")
+    print("\tFrames processed: %d (%7.3fms)" % (stream.frame_count, 1e3*stream.frame_count/stream.samplerate))
+    print("\tcallback serviced %d times" % cbinfo.call_count)
+    print("\txruns: %d" % cbinfo.xruns)
+    print("\tDelta range (ms): [ {:7.3f}, {:7.3f}]".format(1e3*(cbinfo.min_dt), 1e3*(cbinfo.max_dt)))
+    print("\tNominal (ms): {:7.3f}".format(1e3*stream.fileblocksize/stream.samplerate))
+    print("\tMin frames requested : %d" % cbinfo.min_frame_count)
+    print("\tWrite/read misses: %d/%d" % (stream._wmisses, stream._rmisses))
 
     return 0
 
