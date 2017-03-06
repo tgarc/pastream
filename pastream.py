@@ -264,14 +264,14 @@ class _BufferedStreamBase(_sd._StreamBase):
     # PaStream object directly it will screw our ability to tell if a
     # stream has been aborted
     def abort(self):
-        if self._valid and self.active:
+        if _sd._lib.Pa_IsStreamActive(self._ptr):
             super(_BufferedStreamBase, self).abort()
         self._aborted.set()
         self._stopped.set()
         self._raise_exceptions()
 
     def stop(self):
-        if self._valid and self.active:
+        if _sd._lib.Pa_IsStreamActive(self._ptr):
             super(_BufferedStreamBase, self).stop()
         self._stopped.set()
         self._raise_exceptions()

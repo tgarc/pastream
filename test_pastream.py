@@ -87,7 +87,7 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
 
 def assert_blockstream_equal(inp_fh, preamble, **kwargs):
     devargs = dict(DEVICE_KWARGS)
-    del devargs['delay']
+    if 'delay' in devargs: del devargs['delay']
     devargs.update(kwargs)
 
     stream = ps.SoundFileStream(inp_fh, **devargs)
@@ -205,6 +205,7 @@ def test_soundfile_loopback(random_soundfile_input, devargs):
         assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype)
 
 def test_padding_offset_nframes(random_soundfile_input, devargs):
+    if 'delay' not in devargs: return
     inp_fh, preamble, dtype = random_soundfile_input
 
     pad = offset = devargs.pop('delay')
