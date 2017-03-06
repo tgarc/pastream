@@ -93,8 +93,8 @@ class _BufferedStreamBase(_sd._StreamBase):
         The audio frame size in bytes. Equivalent to channels*samplesize.
     """
     def __init__(self, kind, nframes=0, pad=0, offset=0, buffersize=PA_BUFFERSIZE,
-                 blocksize=None, device=None, channels=None, dtype=None,
-                 **kwargs):
+                 raise_on_xruns=False, blocksize=None, device=None,
+                 channels=None, dtype=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
         # the stream in order to be able to pass our user_data
         self.txq = self.rxq = None
@@ -127,6 +127,8 @@ class _BufferedStreamBase(_sd._StreamBase):
             cbinfo = _ffi.new("Py_PsCallbackInfo*", { 'call_count': 0, 'xruns': 0 } )
             userdata = {'status': 0,
                         'duplexity': ['input', 'output', 'duplex'].index(kind) + 1,
+                        'abort_on_xrun': int(raise_on_xruns),
+                        'completed': 0,
                         'frame_count': 0,
                         'nframes': nframes + pad if nframes else nframes,
                         'padframes': pad,
@@ -144,29 +146,43 @@ class _BufferedStreamBase(_sd._StreamBase):
             kwargs['callback'] = _ffi.addressof(_lib, 'callback')
             kwargs['wrap_callback'] = None
 
+        # This event is used to notify the event that the stream has
+        # been aborted. We can use this to abort writing of the ringbuffer
+        self._raise_on_xruns = raise_on_xruns
+        self._aborted = _threading.Event()
+        self._stopped = _threading.Event()
+        self._closed = False
+
+        # To avoid additional complications, we only care about the first
+        # exception raised
+        self._exceptions = _queue.Queue(1)
+
+        user_callback = kwargs.get('finished_callback', lambda : None)
+        def finished_callback():
+            if not (self._cstream.completed or self.stopped):
+                self._aborted.set()
+            self._stopped.set()
+            self._check_callback()
+            user_callback()            
         super(_BufferedStreamBase, self).__init__(kind, blocksize=blocksize,
                                                   device=device,
                                                   channels=channels,
-                                                  dtype=dtype, **kwargs)
+                                                  dtype=dtype,
+                                                  finished_callback=finished_callback,
+                                                  **kwargs)
 
-        # This event is used to notify the event that the stream has
-        # been aborted. We can use this to abort writing of the ringbuffer
-        self._aborted = _threading.Event()
-        self._started = _threading.Event()
-        self._stopped = _threading.Event()
-        self._exc = _queue.Queue()
         self._rmisses = self._wmisses = 0
-
         if isinstance(self._device, int):
             self._device_name = _sd.query_devices(self._device)['name']
         else:
             self._device_name = tuple(_sd.query_devices(dev)['name'] for dev in self._device)
 
     def _raise_exceptions(self):
-        if self._exc.empty():
+        try:
+            exc = self._exceptions.get(block=False)
+        except _queue.Empty:
             return
-
-        exc = self._exc.get()
+        
         if isinstance(exc, tuple):
             exctype, excval, exctb = exc
             if exctype is not None:
@@ -175,20 +191,30 @@ class _BufferedStreamBase(_sd._StreamBase):
                 raise excval.with_traceback(exctb)
             except AttributeError:
                 exec("raise excval, None, exctb")
-
-        raise exc
+        else:
+            raise exc
 
     def _set_exception(self, exc=None):
-        self._exc.put(exc or _sys.exc_info())
+        try:
+            self._exceptions.put(exc or _sys.exc_info(), block=False)
+        except _queue.Full:
+            pass
 
-    @property
-    def started(self):
-        return self._started.is_set()
+    def wait(self, timeout=None):
+        self._stopped.wait(timeout)
 
     @property
     def aborted(self):
         return self._aborted.is_set()
     
+    @property
+    def stopped(self):
+        return self._stopped.is_set()
+
+    @property
+    def closed(self):
+        return self._closed
+
     @property
     def callback_info(self):
         return self._cstream.callbackInfo
@@ -202,43 +228,39 @@ class _BufferedStreamBase(_sd._StreamBase):
         return self._cstream.frame_count
 
     def _check_callback(self):
+        if self._raise_on_xruns and self.status._flags & 0xF:
+            self._set_exception(AudioBufferError(str(self.status)))
+            
         msg = _ffi.string(self._cstream.errorMsg)
         if len(msg):
-            raise AudioBufferError(msg)
-        if self.status._flags & 0xF:
-            raise AudioBufferError(str(self.status))
+            self._set_exception(AudioBufferError(msg))
 
-    def start(self):
-        if self.txq is not None:
-            while self.txq.write_available and not self.aborted:
-                _time.sleep(0.005)
-        super(_BufferedStreamBase, self).start()
-        self._started.set()
+    def __exit__(self, *args):
+        try:
+            self.stop()
+        finally:
+            self.close()
 
     def abort(self):
-        super(_BufferedStreamBase, self).abort()
-        self._stopped.set()
+        if self.active:
+            super(_BufferedStreamBase, self).abort()
         self._aborted.set()
-        try:
-            self._raise_exceptions()
-        finally:
-            self._check_callback()
+        self._stopped.set()
+        self._raise_exceptions()
 
     def stop(self):
-        super(_BufferedStreamBase, self).stop()
+        if self.active:
+            super(_BufferedStreamBase, self).stop()
         self._stopped.set()
-        try:
-            self._raise_exceptions()
-        finally:
-            self._check_callback()
+        self._raise_exceptions()
 
     def close(self):
+        if self.closed:
+            return
         super(_BufferedStreamBase, self).close()
+        self._closed = True
         self._stopped.set()
-        try:
-            self._raise_exceptions()
-        finally:
-            self._check_callback()
+        self._raise_exceptions()
 
     def __repr__(self):
         return ("{0}({1._device_name!r}, samplerate={1._samplerate:.0f}, "
@@ -310,9 +332,9 @@ class _InputStreamMixin(object):
                 active = self.active 
                 nframes = ringbuff.read(outbuff[overlap:], incframes)
                 if nframes == 0:
-                    if self.started and not active: break
+                    if not active: break
                     self._rmisses += 1
-                    self._stopped.wait(dt)
+                    self.wait(dt)
                     continue
 
                 yield yielder(outbuff[:overlap + nframes]) if copy else outbuff[:overlap + nframes]
@@ -395,8 +417,10 @@ class _ThreadedStreamBase(_BufferedStreamBase):
             self._set_exception()
 
             # suppress the exception in this child thread
-            self._aborted.set()
-            _sd._StreamBase.abort(self)
+            if self.active:
+                _sd._StreamBase.abort(self)
+                self._aborted.set()
+                self._stopped.set()
 
     def _stopiothreads(self):
         currthread = _threading.current_thread()
@@ -408,9 +432,12 @@ class _ThreadedStreamBase(_BufferedStreamBase):
     def start(self):
         if self.txt is not None:
             self.txt.start()
+            while self.txq.write_available and self.txt.is_alive():
+                _time.sleep(0.05)
+            if self.aborted: return
+        super(_ThreadedStreamBase, self).start()
         if self.rxt is not None:
             self.rxt.start()
-        super(_ThreadedStreamBase, self).start()
 
     def abort(self):
         try:
@@ -584,17 +611,15 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
         dt = len(ringbuff) / stream.samplerate / 2
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
         while not stream.aborted:
-            nframes = min(ringbuff.read_available, stream.fileblocksize)
-
             # for thread safety, check the stream is active *before* reading
             active = stream.active 
             nframes = ringbuff.read(buff)
             if nframes == 0:
                 # we've read everything and the stream is done; seeya!
-                if stream.started and not active: break
+                if not active: break
                 # we're reading too fast, wait for a buffer write
                 stream._rmisses += 1
-                stream._stopped.wait(dt)
+                stream.wait(dt)
                 continue
 
             stream.out_fh.buffer_write(buff[:nframes*framesize], dtype=dtype)
@@ -617,7 +642,7 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
             if nframes == 0:
                 stream._wmisses += 1
                 # wait for space to free up on the buffer
-                stream._stopped.wait(dt)
+                stream.wait(dt)
                 continue
 
             readframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)

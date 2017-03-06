@@ -24,7 +24,7 @@ elif system == 'Darwin':
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
     DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'blocksize': 512,
-                      'channels': 1, 'samplerate': 48000 }
+                      'channels': 1, 'samplerate': 48000, 'delay': 2048 }
 
 #DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
 
@@ -63,40 +63,31 @@ def find_soundfile_delay(xf, preamble, dtype):
 
     return off
 
-def assert_soundfiles_equal(inp_fh, preamble, **kwargs):
-    devargs = dict(DEVICE_KWARGS)
-    devargs.update(kwargs)
+def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
+    delay = find_soundfile_delay(out_fh, preamble, dtype)
+    assert delay != -1, "Test Preamble pattern not found"
+    out_fh.seek(delay)
 
-    outf = tempfile.TemporaryFile()
+    mframes = 0
+    blocksize = 2048
+    outblocks = out_fh.blocks(blocksize, dtype=dtype, always_2d=True)
+    unsigned_dtype = 'u' + dtype.lstrip('u')
+    inpblk = np.zeros((blocksize, inp_fh.channels), dtype=dtype)
+    for outblk in outblocks:
+        readframes = inp_fh.buffer_read_into(inpblk[:len(outblk)], dtype=dtype)
 
-    with ps.SoundFileStream(inp_fh, outf, sfkwargs={'format':'wav'}, **devargs) as stream:
-        while stream.active: time.sleep(0.1)
+        inp = inpblk[:readframes].view(unsigned_dtype)
+        out = outblk.view(unsigned_dtype)
 
-    outf.seek(0); inp_fh.seek(0)
-    with sf.SoundFile(outf) as out_fh:
-        delay = find_soundfile_delay(out_fh, preamble, stream.dtype[1])
-        assert delay != -1, "Test Preamble pattern not found"
-        out_fh.seek(delay)
+        npt.assert_array_equal(inp, out, "Loopback data mismatch")
+        mframes += readframes
 
-        mframes = 0
-        blocksize = 2048
-        outblocks = out_fh.blocks(blocksize, dtype=stream.dtype[1], always_2d=True)
-        unsigned_dtype = 'u%d'%stream.samplesize[1]
-        inpblk = np.zeros((blocksize, inp_fh.channels), dtype=stream.dtype[0])
-        for outblk in outblocks:
-            readframes = inp_fh.buffer_read_into(inpblk[:len(outblk)], dtype=stream.dtype[0])
-
-            inp = inpblk[:readframes].view(unsigned_dtype)
-            out = outblk.view(unsigned_dtype)
-
-            npt.assert_array_equal(inp, out, "Loopback data mismatch")
-            mframes += readframes
-
-        print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
-              % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
+    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
+          % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
 
 def assert_blockstream_equal(inp_fh, preamble, **kwargs):
     devargs = dict(DEVICE_KWARGS)
+    del devargs['delay']
     devargs.update(kwargs)
 
     stream = ps.SoundFileStream(inp_fh, **devargs)
@@ -137,8 +128,10 @@ def assert_blockstream_equal(inp_fh, preamble, **kwargs):
         nframes += len(outframes)
     assert delay != -1, "Preamble not found or was corrupted"
 
+    stats = mframes, nframes, delay, inpbuff.read_available, stream._rmisses
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %d misses" 
-          % (mframes, nframes, delay, inpbuff.read_available, stream._rmisses))
+          % stats)
+    return stats
 
 def gen_random(rdm_fh, nseconds, elementsize):
     """
@@ -163,7 +156,8 @@ def gen_random(rdm_fh, nseconds, elementsize):
         pattern = np.random.randint(minval, maxval+1, (rdm_fh.samplerate, rdm_fh.channels)) << shift
         rdm_fh.write(pattern.astype(np.int32))
 
-def random_loopback_tester(asserter):
+@pytest.fixture
+def random_soundfile_input(scope='module'):
     elementsize = _dtype2elementsize[DEVICE_KWARGS['dtype']]
 
     rdmf = tempfile.TemporaryFile()
@@ -174,7 +168,7 @@ def random_loopback_tester(asserter):
                           format='wav')
 
     with rdm_fh:
-        gen_random(rdm_fh, 5, elementsize)
+        gen_random(rdm_fh, 1, elementsize)
         rdm_fh.seek(0)
 
         dtype = DEVICE_KWARGS['dtype']
@@ -184,63 +178,85 @@ def random_loopback_tester(asserter):
             dtype = 'int32' 
 
         shift = 8*(4-elementsize)
-        asserter(rdm_fh, (PREAMBLE>>shift)<<shift, dtype=dtype)
 
-def test_blockstream_loopback():
-    random_loopback_tester(assert_blockstream_equal)
+        yield rdm_fh, (PREAMBLE>>shift)<<shift, dtype
 
-def test_soundfile_loopback():
-    random_loopback_tester(assert_soundfiles_equal)
-    
+def test_blockstream_loopback(random_soundfile_input):
+    inp_fh, preamble, dtype = random_soundfile_input
+    assert_blockstream_equal(inp_fh, preamble, dtype=dtype)
+
+def test_soundfile_loopback(random_soundfile_input):
+    inp_fh, preamble, dtype = random_soundfile_input
+
+    kwargs = dict(DEVICE_KWARGS)
+    kwargs['dtype'] = dtype
+    kwargs['sfkwargs'] = {'format': 'wav'}
+    del kwargs['delay']
+
+    outf = tempfile.TemporaryFile()
+    with ps.SoundFileStream(inp_fh, outf, **kwargs) as stream:
+        stream.wait()
+
+    outf.seek(0); inp_fh.seek(0)
+    with sf.SoundFile(outf) as out_fh:
+        assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype)
+
+def test_padding_offset_nframes(random_soundfile_input):
+    inp_fh, preamble, dtype = random_soundfile_input
+
+    kwargs = dict(DEVICE_KWARGS)
+    pad = offset = kwargs.pop('delay')
+
+    # If we offset and pad the recording using a known fixed delay we should
+    # have an *exact* match
+    mframes, nframes, delay = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, pad=pad, offset=offset, nframes=8192)[:3]
+    assert nframes == mframes and delay == 0 and nframes == 8192
+
+    # Using offset only should drop 'offset' frames from the recording
+    inp_fh.seek(0)
+    mframes, nframes = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
+    assert nframes == (len(inp_fh) - offset)
+
 # For testing purposes
 class MyException(Exception):
     pass
 
 def test_deferred_exception_handling():
-    classes = ps.BufferedStream, ps.BufferedInputStream, ps.BufferedOutputStream
-    devices= ('aloop_input', 'aloop_output'), 'aloop_input', 'aloop_output'
     devargs = dict(DEVICE_KWARGS)
-    del devargs['device']
+    del devargs['delay']
 
-    for dev, cls in zip(devices, classes):
-        strm = cls(buffersize=1024, device=dev, **devargs)
-        if strm.txq is not None:
-            strm.txq.write(bytearray(1024*strm.txq.elementsize))
-        with pytest.raises(MyException) as excinfo:
-            with strm:
-                strm._set_exception(MyException("BOO-urns!"))
-        assert strm.started and strm.stopped
-        sd._terminate()
-        sd._initialize()
-        sd.query_devices()
+    stream = ps.BufferedStream(buffersize=8192, **devargs)
+    stream.txq.write( bytearray(len(stream.txq)*stream.txq.elementsize) )
+    with pytest.raises(MyException) as excinfo:
+        with stream:
+            stream._set_exception(MyException("BOO-urns!"))
+            stream.wait()
 
-def test_threaded_deferred_exception_handling():
-    classes = ps.ThreadedStream, ps.ThreadedInputStream, ps.ThreadedOutputStream
-    devices= 'aloop_duplex', 'aloop_input', 'aloop_output'
+def test_threaded_write_deferred_exception_handling():
     devargs = dict(DEVICE_KWARGS)
-    del devargs['device']
+    del devargs['delay']
 
-    rxmsg = "BOO!"
     txmsg = "BOO-urns!"
-
     def qwriter(stream, ringbuff):
         raise MyException(txmsg)
 
+    stream = ps.ThreadedStream(buffersize=8192, qwriter=qwriter, **devargs)
+    stream.txq.write( bytearray(len(stream.txq)*stream.txq.elementsize) )
+    with pytest.raises(MyException) as excinfo:
+        with stream: stream.wait()
+    assert str(excinfo.value) == txmsg
+
+def test_threaded_read_deferred_exception_handling():
+    devargs = dict(DEVICE_KWARGS)
+    del devargs['delay']
+
+    rxmsg = "BOO!"
     def qreader(stream, ringbuff):
         raise MyException(rxmsg)
 
-    for dev, cls in zip(devices, classes):
-        sd.query_devices()
-        strm = cls(device=dev, buffersize=1024, qwriter=qwriter, qreader=qreader, **devargs)
-        if strm.txq is not None:
-            strm.txq.write(bytearray(1024*strm.framesize))
-        with pytest.raises(MyException) as excinfo:
-            with strm:
-                pass
-
-        assert str(excinfo.value) == txmsg
-
-        # The reader exception should still be in the exception queue
-        with pytest.raises(MyException) as excinfo:
-            strm._raise_exceptions()
-        assert str(excinfo.value) == rxmsg
+    # A reader exception should also stop the stream
+    stream = ps.ThreadedStream(buffersize=8192, qreader=qreader, **devargs)
+    stream.txq.write( bytearray(len(stream.txq)*stream.txq.elementsize) )
+    with pytest.raises(MyException) as excinfo:
+        with stream: stream.wait()
+    assert str(excinfo.value) == rxmsg

@@ -38,12 +38,14 @@ int callback(
     stream->status |= status;
     if (status&0xF) {
         stream->callbackInfo->xruns++;
+        if (stream->abort_on_xrun) { return paAbort; }
     }
 
     // (1) We've surpassed nframes: this is our last callback
     if (stream->nframes && stream->frame_count + frames_left >= stream->nframes) {
         frames_left = stream->nframes - stream->frame_count;
         returnCode = paComplete;
+        stream->completed = 1;
     }
 
     if (stream->duplexity & O_MODE) {
@@ -65,6 +67,7 @@ int callback(
                 if (stream->frame_count + frames_left >= stream->nframes) {
                     frames_left = stream->nframes - stream->frame_count;
                     returnCode = paComplete;
+                    stream->completed = 1;
                 }
             }
         }
