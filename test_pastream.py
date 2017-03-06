@@ -95,14 +95,14 @@ def assert_blockstream_equal(inp_fh, preamble, **kwargs):
     # 'tee' the transmit queue writer so that we can recall any input and match
     # it to the output. We make it larger than usual (4M frames) to allow for
     # extra slack
-    inpbuff = pa_ringbuffer.RingBuffer(stream.txq.elementsize, len(stream.txq) * 2)
-    writer = stream.txq.write
+    inpbuff = pa_ringbuffer.RingBuffer(stream.txbuff.elementsize, len(stream.txbuff) * 2)
+    writer = stream.txbuff.write
     def teewrite(buff, size=-1):
         nframes1 = writer(buff, size)
         nframes2 = inpbuff.write(buff, nframes1)
         assert nframes1 == nframes2, "Ran out of temporary buffer space. Use a larger buffersize"
         return nframes1
-    stream.txq.write = teewrite
+    stream.txbuff.write = teewrite
 
     delay = -1
     found_delay = False
@@ -226,7 +226,7 @@ def test_deferred_exception_handling():
     del devargs['delay']
 
     stream = ps.BufferedStream(buffersize=8192, **devargs)
-    stream.txq.write( bytearray(len(stream.txq)*stream.txq.elementsize) )
+    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
             stream._set_exception(MyException("BOO-urns!"))
@@ -241,7 +241,7 @@ def test_threaded_write_deferred_exception_handling():
         raise MyException(txmsg)
 
     stream = ps.ThreadedStream(buffersize=8192, qwriter=qwriter, **devargs)
-    stream.txq.write( bytearray(len(stream.txq)*stream.txq.elementsize) )
+    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream: stream.wait()
     assert str(excinfo.value) == txmsg
@@ -256,7 +256,7 @@ def test_threaded_read_deferred_exception_handling():
 
     # A reader exception should also stop the stream
     stream = ps.ThreadedStream(buffersize=8192, qreader=qreader, **devargs)
-    stream.txq.write( bytearray(len(stream.txq)*stream.txq.elementsize) )
+    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream: stream.wait()
     assert str(excinfo.value) == rxmsg

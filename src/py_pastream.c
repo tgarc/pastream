@@ -1,6 +1,6 @@
 #include <portaudio.h>
 #include <pa_ringbuffer.h>
-#include "pastream.h"
+#include "py_pastream.h"
 
 
 int callback(
@@ -13,7 +13,7 @@ int callback(
 {
     unsigned long frames_left = frame_count, offset = 0;
     ring_buffer_size_t oframes;
-    Py_PsBufferedStream *stream = (Py_PsBufferedStream *) user_data;
+    Py_PaBufferedStream *stream = (Py_PaBufferedStream *) user_data;
     PaTime timedelta = timeInfo->currentTime - stream->callbackInfo->lastTime;
     int returnCode = paContinue;
 
@@ -49,15 +49,15 @@ int callback(
     }
 
     if (stream->duplexity & O_MODE) {
-        oframes = PaUtil_ReadRingBuffer(stream->txq, out_data, frames_left);
+        oframes = PaUtil_ReadRingBuffer(stream->txbuff, out_data, frames_left);
 
         // We're done reading frames! Or the writer was too slow; either way,
         // finish up by adding some zero padding.
         if (oframes < frames_left) {
             // Fill the remainder of the output buffer with zeros
-            memset((unsigned char *) out_data + oframes*stream->txq->elementSizeBytes,
+            memset((unsigned char *) out_data + oframes*stream->txbuff->elementSizeBytes,
                    0, 
-                   (frame_count - oframes)*stream->txq->elementSizeBytes);
+                   (frame_count - oframes)*stream->txbuff->elementSizeBytes);
 
             if ( !stream->nframes ) {
                 // Figure out how much additional padding to insert and set nframes
@@ -77,9 +77,9 @@ int callback(
         if (stream->frame_count < stream->offset) {
             offset = stream->offset - stream->frame_count;
             frames_left -= offset;
-            in_data = (unsigned char *) in_data + offset*stream->rxq->elementSizeBytes;
+            in_data = (unsigned char *) in_data + offset*stream->rxbuff->elementSizeBytes;
         }
-        if (PaUtil_WriteRingBuffer(stream->rxq, (void *) in_data, frames_left) < frames_left) {
+        if (PaUtil_WriteRingBuffer(stream->rxbuff, (void *) in_data, frames_left) < frames_left) {
             strcpy(stream->errorMsg, "Receive queue is full.");
             return paAbort;
         }

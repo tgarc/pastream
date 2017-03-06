@@ -1,17 +1,17 @@
-typedef enum duplexity {
+typedef enum duplexity_t {
     I_MODE = 1,
     O_MODE,
     IO_MODE
 } duplexity_t;
 
-typedef struct Py_PsCallbackInfo {
+typedef struct Py_PaCallbackInfo {
     PaTime max_dt, min_dt, lastTime;
     unsigned long call_count;
     unsigned long min_frame_count;
     unsigned long xruns;
-} Py_PsCallbackInfo;
+} Py_PaCallbackInfo;
 
-typedef struct Py_PsBufferedStream {
+typedef struct Py_PaBufferedStream {
     PaStreamCallbackFlags status;
     int completed;                // used to check whether a stream was aborted
     int abort_on_xrun;
@@ -20,11 +20,11 @@ typedef struct Py_PsBufferedStream {
     unsigned long padframes;      // Number of zero frames to pad the input with
     unsigned long offset;         // Number of frames to skip from beginning of recordings
     duplexity_t duplexity;        
-    PaUtilRingBuffer* rxq;        // Receive buffer
-    PaUtilRingBuffer* txq;        // Transmit buffer
+    PaUtilRingBuffer* rxbuff;     // Receive buffer
+    PaUtilRingBuffer* txbuff;     // Transmit buffer
     char errorMsg[120];           // Reserved for errors raised in the audio callback
-    Py_PsCallbackInfo* callbackInfo;
-} Py_PsBufferedStream;
+    Py_PaCallbackInfo* callbackInfo;
+} Py_PaBufferedStream;
 
 int callback(const void* in_data, void* out_data, 
              unsigned long frame_count, 

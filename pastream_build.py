@@ -22,11 +22,11 @@ typedef struct PaUtilRingBuffer
 } PaUtilRingBuffer;
 """)
 
-ffibuilder.cdef(open('src/pastream.h').read())
+ffibuilder.cdef(open('src/py_pastream.h').read())
 
 ffibuilder.set_source(
     '_pastream',
-    open('src/pastream.c').read(),
+    open('src/py_pastream.c').read(),
     include_dirs=['src', 'portaudio/include', 'portaudio/src/common'],
     sources=['portaudio/src/common/pa_ringbuffer.c'],
 )
