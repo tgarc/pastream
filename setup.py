@@ -15,7 +15,7 @@ setup(name='pastream',
       author_email='toemossgarcia@gmail.com',
       long_description=open('README.rst').read(),
       entry_points={'console_scripts': ['pastream = pastream:_main']},
-      cffi_modules=["pastream_build.py:ffibuilder"],
+      cffi_modules=["build_pastream.py:ffibuilder"],
       install_requires=[
           'soundfile>=0.9.0',
           'sounddevice>=0.3.7',

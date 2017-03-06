@@ -181,31 +181,33 @@ def random_soundfile_input(scope='module'):
 
         yield rdm_fh, (PREAMBLE>>shift)<<shift, dtype
 
+@pytest.fixture
+def devargs():
+    return dict(DEVICE_KWARGS)
+
 def test_blockstream_loopback(random_soundfile_input):
     inp_fh, preamble, dtype = random_soundfile_input
     assert_blockstream_equal(inp_fh, preamble, dtype=dtype)
 
-def test_soundfile_loopback(random_soundfile_input):
+def test_soundfile_loopback(random_soundfile_input, devargs):
+    if 'delay' in devargs: del devargs['delay']
     inp_fh, preamble, dtype = random_soundfile_input
 
-    kwargs = dict(DEVICE_KWARGS)
-    kwargs['dtype'] = dtype
-    kwargs['sfkwargs'] = {'format': 'wav'}
-    del kwargs['delay']
+    devargs['dtype'] = dtype
+    devargs['sfkwargs'] = {'format': 'wav'}
 
     outf = tempfile.TemporaryFile()
-    with ps.SoundFileStream(inp_fh, outf, **kwargs) as stream:
+    with ps.SoundFileStream(inp_fh, outf, **devargs) as stream:
         stream.wait()
 
     outf.seek(0); inp_fh.seek(0)
     with sf.SoundFile(outf) as out_fh:
         assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype)
 
-def test_padding_offset_nframes(random_soundfile_input):
+def test_padding_offset_nframes(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
-    kwargs = dict(DEVICE_KWARGS)
-    pad = offset = kwargs.pop('delay')
+    pad = offset = devargs.pop('delay')
 
     # If we offset and pad the recording using a known fixed delay we should
     # have an *exact* match
@@ -221,9 +223,8 @@ def test_padding_offset_nframes(random_soundfile_input):
 class MyException(Exception):
     pass
 
-def test_deferred_exception_handling():
-    devargs = dict(DEVICE_KWARGS)
-    del devargs['delay']
+def test_deferred_exception_handling(devargs):
+    if 'delay' in devargs: del devargs['delay']
 
     stream = ps.BufferedStream(buffersize=8192, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
@@ -232,9 +233,8 @@ def test_deferred_exception_handling():
             stream._set_exception(MyException("BOO-urns!"))
             stream.wait()
 
-def test_threaded_write_deferred_exception_handling():
-    devargs = dict(DEVICE_KWARGS)
-    del devargs['delay']
+def test_threaded_write_deferred_exception_handling(devargs):
+    if 'delay' in devargs: del devargs['delay']
 
     txmsg = "BOO-urns!"
     def qwriter(stream, ringbuff):
@@ -246,9 +246,8 @@ def test_threaded_write_deferred_exception_handling():
         with stream: stream.wait()
     assert str(excinfo.value) == txmsg
 
-def test_threaded_read_deferred_exception_handling():
-    devargs = dict(DEVICE_KWARGS)
-    del devargs['delay']
+def test_threaded_read_deferred_exception_handling(devargs):
+    if 'delay' in devargs: del devargs['delay']
 
     rxmsg = "BOO!"
     def qreader(stream, ringbuff):
@@ -260,3 +259,17 @@ def test_threaded_read_deferred_exception_handling():
     with pytest.raises(MyException) as excinfo:
         with stream: stream.wait()
     assert str(excinfo.value) == rxmsg
+
+def test_valid_stream_checker(devargs):
+    if 'delay' in devargs: del devargs['delay']
+
+    stream = ps.BufferedStream(buffersize=8192, **devargs)
+    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
+
+    assert stream._valid == True
+    stream.start()
+    assert stream._valid == True
+    stream.stop()
+    assert stream._valid == True
+    stream.close()
+    assert stream._valid == False

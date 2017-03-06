@@ -26,7 +26,7 @@ import soundfile as _sf
 import pa_ringbuffer as _pa_ringbuffer
 import traceback as _traceback
 import weakref as _weakref
-from _pastream import ffi as _ffi, lib as _lib
+from _py_pastream import ffi as _ffi, lib as _lib
 try:
     import numpy as _np
 except:
@@ -151,7 +151,6 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._raise_on_xruns = raise_on_xruns
         self._aborted = _threading.Event()
         self._stopped = _threading.Event()
-        self._closed = False
 
         # To simplify things, we only care about the first exception
         # raised
@@ -226,16 +225,17 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._stopped.wait(timeout)
 
     @property
+    def _valid(self):
+        # Indirectly check if we still have a valid stream object
+        return _sd._lib.Pa_IsStreamActive(self._ptr) >= 0
+
+    @property
     def aborted(self):
         return self._aborted.is_set()
     
     @property
     def stopped(self):
         return self._stopped.is_set()
-
-    @property
-    def closed(self):
-        return self._closed
 
     @property
     def callback_info(self):
@@ -264,23 +264,21 @@ class _BufferedStreamBase(_sd._StreamBase):
     # PaStream object directly it will screw our ability to tell if a
     # stream has been aborted
     def abort(self):
-        if self.active:
+        if self._valid and self.active:
             super(_BufferedStreamBase, self).abort()
         self._aborted.set()
         self._stopped.set()
         self._raise_exceptions()
 
     def stop(self):
-        if self.active:
+        if self._valid and self.active:
             super(_BufferedStreamBase, self).stop()
         self._stopped.set()
         self._raise_exceptions()
 
     def close(self):
-        if self.closed:
-            return
-        super(_BufferedStreamBase, self).close()
-        self._closed = True
+        if self._valid:
+            super(_BufferedStreamBase, self).close()
         self._stopped.set()
         self._raise_exceptions()
 
