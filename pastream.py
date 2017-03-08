@@ -295,7 +295,7 @@ class _BufferedStreamBase(_sd._StreamBase):
                 ).format(self.__class__.__name__, self)
 
 class _InputStreamMixin(object):
-    def blockstream(self, always_2d=False):
+    def blockstream(self, overlap=0, always_2d=False, copy=False):
         """
         Similar to SoundFile.blocks. Returns an iterator over audio chunks read from
         a Portaudio stream. Can be either half-duplex (recording-only) or
@@ -303,9 +303,13 @@ class _InputStreamMixin(object):
 
         Parameters
         ----------
+        overlap : int
+            Number of frames to overlap across blocks.
         always_2d : bool
-            Always returns blocks 2 dimensional arrays. Only valid if you have numpy
-            installed.
+            Always returns blocks 2 dimensional arrays. Only valid if you have
+            numpy installed.
+        copy : bool
+            Whether to return copies of blocks. By default a view is returned.
 
         Yields
         ------
@@ -318,6 +322,8 @@ class _InputStreamMixin(object):
             raise ValueError("Requires a fixed known blocksize")
         if _np is None and always_2d:
             raise ValueError("always_2d is only supported with numpy")
+        if overlap >= blocksize:
+            raise ValueError("Overlap must be less than blocksize")
 
         try:
             channels = self.channels[0]
@@ -616,18 +622,20 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
 
     # Default handler for writing input from a ThreadedStream to a SoundFile object
     @staticmethod
-    def _soundfilewriter(stream, rxq):
-        if isinstance(stream.dtype, _basestring):
-            dtype = stream.dtype
-        else:
+    def _soundfilewriter(stream, rxbuff):
+        try:               
+            framesize = stream.framesize[0]
             dtype = stream.dtype[0]
+        except TypeError: 
+            framesize = stream.framesize
+            dtype = stream.dtype    
 
-        dt = len(ringbuff) / stream.samplerate / 2
+        dt = len(rxbuff) / stream.samplerate / 2
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
         while not stream.aborted:
             # for thread safety, check the stream is active *before* reading
             active = stream.active 
-            nframes = ringbuff.read(buff)
+            nframes = rxbuff.read(buff)
             if nframes == 0:
                 # we've read everything and the stream is done; seeya!
                 if not active: break
@@ -641,7 +649,7 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
     # Default handler for reading input from a SoundFile object and writing it to a
     # ThreadedStream
     @staticmethod
-    def _soundfilereader(stream, txq):
+    def _soundfilereader(stream, txbuff):
         try:               
             framesize = stream.framesize[1]
             dtype = stream.dtype[1]
@@ -649,10 +657,10 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
             framesize = stream.framesize
             dtype = stream.dtype    
 
-        dt = len(ringbuff) / stream.samplerate / 2
+        dt = len(txbuff) / stream.samplerate / 2
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
         while not (stream.aborted or stream.stopped):
-            nframes = min(ringbuff.write_available, stream.fileblocksize)
+            nframes = min(txbuff.write_available, stream.fileblocksize)
             if nframes == 0:
                 stream._wmisses += 1
                 # wait for space to free up on the buffer
@@ -660,7 +668,7 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
                 continue
 
             readframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
-            ringbuff.write(buff, readframes)
+            txbuff.write(buff, readframes)
             if readframes < nframes:
                 break # we've reached end of file; all done!
 
@@ -745,6 +753,13 @@ def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False,
         Optional input stimuli.
     blocksize : int
         Portaudio stream buffer size. Must be non-zero.
+    overlap : int
+        Number of frames to overlap across blocks.
+    always_2d : bool
+        Always returns blocks 2 dimensional arrays. Only valid if you have
+        numpy installed.
+    copy : bool
+        Whether to return copies of blocks. By default a view is returned.
 
     Other Parameters
     -----------------
@@ -770,7 +785,7 @@ def blockstream(inpf=None, blocksize=512, overlap=0, always_2d=False,
             streamclass = SoundFileStream
         stream = streamclass(inpf, blocksize=blocksize, qwriter=qwriter, **kwargs)
 
-    return stream.blockstream(always_2d)
+    return stream.blockstream(overlap, always_2d, copy)
 
 # Used just for the pastream app
 def SoundFileStreamFactory(inpf=None, outf=None, **kwargs):
