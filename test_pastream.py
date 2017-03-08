@@ -92,44 +92,44 @@ def assert_blockstream_equal(inp_fh, preamble, compensate_delay=False, **kwargs)
     inp_fh.seek(0)
     stream = ps.SoundFileStream(inp_fh, **devargs)
 
-    # 'tee' the transmit queue writer so that we can recall any input and match
-    # it to the output. We make it larger than usual (4M frames) to allow for
-    # extra slack
-    inpbuff = pa_ringbuffer.RingBuffer(stream.txbuff.elementsize, len(stream.txbuff) * 2)
-    writer = stream.txbuff.write
-    def teewrite(buff, size=-1):
-        nframes1 = writer(buff, size)
-        nframes2 = inpbuff.write(buff, nframes1)
-        assert nframes1 == nframes2, "Ran out of temporary buffer space. Use a larger buffersize"
-        return nframes1
-    stream.txbuff.write = teewrite
+    try:
+        # 'tee' the transmit queue writer so that we can recall any
+        # input and match it to the output.
+        inpbuff = pa_ringbuffer.RingBuffer(stream.txbuff.elementsize, 4*len(stream.txbuff))
+        writer = stream.txbuff.write
+        def teewrite(buff, size=-1):
+            nframes1 = writer(buff, size)
+            nframes2 = inpbuff.write(buff, nframes1)
+            assert nframes1 == nframes2, "Ran out of temporary buffer space. Use a larger buffersize"
+            return nframes1
+        stream.txbuff.write = teewrite
 
-    delay = -1
-    found_delay = False
-    unsigned_dtype = 'u%d'%stream.samplesize[1]
-    nframes = mframes = 0
-    inframes = np.zeros((stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
-    for outframes in stream.blockstream(always_2d=True):
-        if not found_delay:
-            matches = outframes[:, 0].view(unsigned_dtype) == preamble
-            if np.any(matches): 
-                found_delay = True
-                nonzeros = np.where(matches)[0]
-                outframes = outframes[nonzeros[0]:]
-                nframes += nonzeros[0]
-                delay = nframes
-                if compensate_delay: stream.padding = delay
-        if found_delay:
-            readframes = inpbuff.read(inframes, len(outframes))
-            inp = inframes[:readframes].view(unsigned_dtype)
-            out = outframes[:readframes].view(unsigned_dtype)
+        delay = -1
+        found_delay = False
+        unsigned_dtype = 'u%d'%stream.samplesize[1]
+        nframes = mframes = 0
+        inframes = np.zeros((stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
+        for outframes in stream.blockstream(always_2d=True):
+            if not found_delay:
+                matches = outframes[:, 0].view(unsigned_dtype) == preamble
+                if np.any(matches): 
+                    found_delay = True
+                    nonzeros = np.where(matches)[0]
+                    outframes = outframes[nonzeros[0]:]
+                    nframes += nonzeros[0]
+                    delay = nframes
+                    if compensate_delay: stream.padding = delay
+            if found_delay:
+                readframes = inpbuff.read(inframes, len(outframes))
+                inp = inframes[:readframes].view(unsigned_dtype)
+                out = outframes[:readframes].view(unsigned_dtype)
 
-            npt.assert_array_equal(inp, out, "Loopback data mismatch")
-            mframes += readframes
-        nframes += len(outframes)
-    assert delay != -1, "Preamble not found or was corrupted"
-
-    stream.close()
+                npt.assert_array_equal(inp, out, "Loopback data mismatch")
+                mframes += readframes
+            nframes += len(outframes)
+        assert delay != -1, "Preamble not found or was corrupted"
+    finally:
+        stream.close()
 
     stats = mframes, nframes, delay, inpbuff.read_available, stream._rmisses
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %d misses" 

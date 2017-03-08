@@ -268,7 +268,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         finally:
             self.close()
 
-    def start(self):
+    def _prepare_start(self):
         assert not self.active, "Stream has already been started!"
 
         # Apparently when using a PaStreamFinishedCallback the stream
@@ -288,6 +288,8 @@ class _BufferedStreamBase(_sd._StreamBase):
         if self.rxbuff is not None:
             self.rxbuff.flush()
 
+    def start(self):
+        self._prepare_start()
         super(_BufferedStreamBase, self).start()
 
     def abort(self):
@@ -469,13 +471,12 @@ class _ThreadedStreamBase(_BufferedStreamBase):
             self.txt.join()
 
     def start(self):
+        self._prepare_start()
         if self.txt is not None:
-            self._finished.clear()
-            self._aborted.clear()
             self.txt.start()
             while self.txbuff.write_available and self.txt.is_alive():
                 _time.sleep(0.05)
-        super(_ThreadedStreamBase, self).start()
+        _sd._StreamBase.start(self)
         if self.rxt is not None:
             self.rxt.start()
 
