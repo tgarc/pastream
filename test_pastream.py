@@ -24,7 +24,7 @@ elif system == 'Darwin':
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
     DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'blocksize': 512,
-                      'channels': 1, 'samplerate': 48000, 'delay': 2048 }
+                      'channels': 1, 'samplerate': 48000 }
 
 #DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
 
@@ -85,11 +85,11 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
           % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
 
-def assert_blockstream_equal(inp_fh, preamble, **kwargs):
+def assert_blockstream_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
     devargs = dict(DEVICE_KWARGS)
-    if 'delay' in devargs: del devargs['delay']
     devargs.update(kwargs)
 
+    inp_fh.seek(0)
     stream = ps.SoundFileStream(inp_fh, **devargs)
 
     # 'tee' the transmit queue writer so that we can recall any input and match
@@ -118,6 +118,7 @@ def assert_blockstream_equal(inp_fh, preamble, **kwargs):
                 outframes = outframes[nonzeros[0]:]
                 nframes += nonzeros[0]
                 delay = nframes
+                if compensate_delay: stream.padding = delay
         if found_delay:
             readframes = inpbuff.read(inframes, len(outframes))
             inp = inframes[:readframes].view(unsigned_dtype)
@@ -127,6 +128,8 @@ def assert_blockstream_equal(inp_fh, preamble, **kwargs):
             mframes += readframes
         nframes += len(outframes)
     assert delay != -1, "Preamble not found or was corrupted"
+
+    stream.close()
 
     stats = mframes, nframes, delay, inpbuff.read_available, stream._rmisses
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %d misses" 
@@ -190,7 +193,6 @@ def test_blockstream_loopback(random_soundfile_input):
     assert_blockstream_equal(inp_fh, preamble, dtype=dtype)
 
 def test_soundfile_loopback(random_soundfile_input, devargs):
-    if 'delay' in devargs: del devargs['delay']
     inp_fh, preamble, dtype = random_soundfile_input
 
     devargs['dtype'] = dtype
@@ -204,29 +206,42 @@ def test_soundfile_loopback(random_soundfile_input, devargs):
     with sf.SoundFile(outf) as out_fh:
         assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype)
 
-def test_padding_offset_nframes(random_soundfile_input, devargs):
-    if 'delay' not in devargs: return
+def test_pad_offset_nframes(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
-    pad = offset = devargs.pop('delay')
+    # If we compensate for the delay we should have no frames truncated
+    mframes, nframes, delay, ntrunc = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
+    assert ntrunc == 0
+
+    # Using offset only should drop 'offset' frames from the recording
+    offset = 2048
+    mframes, nframes = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
+    assert nframes == (len(inp_fh) - offset)
 
     # If we offset and pad the recording using a known fixed delay we should
     # have an *exact* match
-    mframes, nframes, delay = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, pad=pad, offset=offset, nframes=8192)[:3]
-    assert nframes == mframes and delay == 0 and nframes == 8192
-
-    # Using offset only should drop 'offset' frames from the recording
-    inp_fh.seek(0)
-    mframes, nframes = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
-    assert nframes == (len(inp_fh) - offset)
+    mframes, nframes, delay = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, nframes=8192)[:3]
+    assert nframes == 8192
+ 
+def test_stream_replay(devargs):   
+    stream = ps.BufferedStream(buffersize=8192, **devargs)
+    data = bytearray(len(stream.txbuff)*stream.txbuff.elementsize)
+    stream.txbuff.write(data)
+    stream.start()
+    assert stream.wait(0.5), "Timed out!"
+    assert stream.finished
+    stream.txbuff.write(data)
+    stream.start()
+    assert stream.active
+    stream.abort()
+    assert stream.aborted
+    stream.close()
 
 # For testing purposes
 class MyException(Exception):
     pass
 
 def test_deferred_exception_handling(devargs):
-    if 'delay' in devargs: del devargs['delay']
-
     stream = ps.BufferedStream(buffersize=8192, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
@@ -235,8 +250,6 @@ def test_deferred_exception_handling(devargs):
             stream.wait()
 
 def test_threaded_write_deferred_exception_handling(devargs):
-    if 'delay' in devargs: del devargs['delay']
-
     txmsg = "BOO-urns!"
     def qwriter(stream, ringbuff):
         raise MyException(txmsg)
@@ -244,12 +257,11 @@ def test_threaded_write_deferred_exception_handling(devargs):
     stream = ps.ThreadedStream(buffersize=8192, qwriter=qwriter, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
-        with stream: stream.wait()
+        with stream:
+            assert stream.wait(0.5), "Timed out!"
     assert str(excinfo.value) == txmsg
 
 def test_threaded_read_deferred_exception_handling(devargs):
-    if 'delay' in devargs: del devargs['delay']
-
     rxmsg = "BOO!"
     def qreader(stream, ringbuff):
         raise MyException(rxmsg)
@@ -258,19 +270,6 @@ def test_threaded_read_deferred_exception_handling(devargs):
     stream = ps.ThreadedStream(buffersize=8192, qreader=qreader, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
-        with stream: stream.wait()
+        with stream:
+            assert stream.wait(0.5), "Timed out!"
     assert str(excinfo.value) == rxmsg
-
-def test_valid_stream_checker(devargs):
-    if 'delay' in devargs: del devargs['delay']
-
-    stream = ps.BufferedStream(buffersize=8192, **devargs)
-    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
-
-    assert stream._valid == True
-    stream.start()
-    assert stream._valid == True
-    stream.stop()
-    assert stream._valid == True
-    stream.close()
-    assert stream._valid == False

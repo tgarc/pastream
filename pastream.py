@@ -24,7 +24,6 @@ import sys as _sys
 import sounddevice as _sd
 import soundfile as _sf
 import pa_ringbuffer as _pa_ringbuffer
-import traceback as _traceback
 import weakref as _weakref
 from _py_pastream import ffi as _ffi, lib as _lib
 try:
@@ -130,6 +129,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         # Set up the C portaudio callback
         self._cstream = _ffi.NULL
         self.__weakref = _weakref.WeakKeyDictionary()
+        self.__nframes = nframes
         if kwargs.get('callback', None) is None:
             cbinfo = _ffi.new("Py_PaCallbackInfo*", { 'call_count': 0, 'xruns': 0 } )
             userdata = {'status': 0,
@@ -153,11 +153,12 @@ class _BufferedStreamBase(_sd._StreamBase):
             kwargs['callback'] = _ffi.addressof(_lib, 'callback')
             kwargs['wrap_callback'] = None
 
-        # This event is used to notify the event that the stream has
-        # been aborted. We can use this to abort writing of the ringbuffer
-        self._raise_on_xruns = raise_on_xruns
+        # These flags are used to tell when the callbacks have
+        # finished.  We can use them to abort writing of the
+        # ringbuffer.
         self._aborted = _threading.Event()
-        self._stopped = _threading.Event()
+        self._finished = _threading.Event()
+        self._finished.set()
 
         # To simplify things, we only care about the first exception
         # raised
@@ -169,11 +170,10 @@ class _BufferedStreamBase(_sd._StreamBase):
         def finished_callback():
             # If the stream was stopped before it was completed AND
             # the user has not called stop()/abort() then the stream
-            # was aborted by some other means and we need to reflect
-            # that in our aborted flag.
+            # must've been aborted
             if not (self._cstream.completed or self.stopped):
                 self._aborted.set()
-            self._stopped.set()
+            self._finished.set()
 
             # Check for any errors that might've occurred in the
             # callback
@@ -182,19 +182,17 @@ class _BufferedStreamBase(_sd._StreamBase):
             msg = _ffi.string(self._cstream.errorMsg)
             if len(msg):
                 self._set_exception(AudioBufferError(msg))
-            if self._raise_on_xruns and self.status._flags & 0xF:
+            if self._cstream.abort_on_xrun and self.status._flags & 0xF:
                 self._set_exception(AudioBufferError(str(self.status)))
 
             # Okay, let the user handle their stuff
             user_callback()            
-
         super(_BufferedStreamBase, self).__init__(kind, blocksize=blocksize,
                                                   device=device,
                                                   channels=channels,
                                                   dtype=dtype,
                                                   finished_callback=finished_callback,
                                                   **kwargs)
-
         self._rmisses = self._wmisses = 0
         if isinstance(self._device, int):
             self._device_name = _sd.query_devices(self._device)['name']
@@ -202,10 +200,6 @@ class _BufferedStreamBase(_sd._StreamBase):
             self._device_name = tuple(_sd.query_devices(dev)['name'] for dev in self._device)
 
     def _raise_exceptions(self):
-        # defer exceptions coming from child threads
-        if not isinstance(_threading.current_thread(), _threading._MainThread):
-            return
-
         try:
             exc = self._exceptions.get(block=False)
         except _queue.Empty:
@@ -229,20 +223,15 @@ class _BufferedStreamBase(_sd._StreamBase):
             pass
 
     def wait(self, timeout=None):
-        self._stopped.wait(timeout)
-
-    @property
-    def _valid(self):
-        # Indirectly check if we still have a valid stream object
-        return _sd._lib.Pa_IsStreamActive(self._ptr) >= 0
+        return self._finished.wait(timeout)
 
     @property
     def aborted(self):
         return self._aborted.is_set()
     
     @property
-    def stopped(self):
-        return self._stopped.is_set()
+    def finished(self):
+        return self._finished.is_set()
 
     @property
     def callback_info(self):
@@ -256,6 +245,23 @@ class _BufferedStreamBase(_sd._StreamBase):
     def frame_count(self):
         return self._cstream.frame_count
 
+    @property
+    def padding(self):
+        return self._cstream.padframes
+
+    @padding.setter
+    def padding(self, value):
+        self._cstream.padframes = value
+
+    @property
+    def nframes(self):
+        return self.__nframes
+
+    @nframes.setter
+    def nframes(self, value):
+        self.__nframes = value
+        self._cstream.nframes = self.__nframes + self._cstram.padframes
+
     def __exit__(self, *args):
         try:
             self.stop()
@@ -263,31 +269,42 @@ class _BufferedStreamBase(_sd._StreamBase):
             self.close()
 
     def start(self):
+        assert not self.active, "Stream has already been started!"
+
+        # Apparently when using a PaStreamFinishedCallback the stream
+        # *must* be stopped before starting the stream again or the
+        # streamFinishedCallback will never be called
+        super(_BufferedStreamBase, self).stop()
+
+        self._aborted.clear()
+        self._finished.clear()
+        self._cstream.callbackInfo.call_count = 0
+        self._cstream.callbackInfo.xruns = 0
+        self._cstream.status = 0
+        self._cstream.completed = 0
+        self._cstream.frame_count = 0
+        self._cstream.nframes = self.__nframes
+        self._cstream.errorMsg = b''
         if self.rxbuff is not None:
             self.rxbuff.flush()
+
         super(_BufferedStreamBase, self).start()
 
-    # Note that if somebody goes around us and calls abort on the
-    # PaStream object directly it will screw our ability to tell if a
-    # stream has been aborted
     def abort(self):
-        if _sd._lib.Pa_IsStreamActive(self._ptr):
-            super(_BufferedStreamBase, self).abort()
-        self._aborted.set()
-        self._stopped.set()
-        self._raise_exceptions()
+        super(_BufferedStreamBase, self).abort()
+        # defer exceptions coming from child threads
+        if isinstance(_threading.current_thread(), _threading._MainThread):
+            self._raise_exceptions()
 
     def stop(self):
-        if _sd._lib.Pa_IsStreamActive(self._ptr):
-            super(_BufferedStreamBase, self).stop()
-        self._stopped.set()
-        self._raise_exceptions()
+        super(_BufferedStreamBase, self).stop()
+        if isinstance(_threading.current_thread(), _threading._MainThread):
+            self._raise_exceptions()
 
     def close(self):
-        if self._valid:
-            super(_BufferedStreamBase, self).close()
-        self._stopped.set()
-        self._raise_exceptions()
+        super(_BufferedStreamBase, self).close()
+        if isinstance(_threading.current_thread(), _threading._MainThread):
+            self._raise_exceptions()
 
     def __repr__(self):
         return ("{0}({1._device_name!r}, samplerate={1._samplerate:.0f}, "
@@ -317,7 +334,6 @@ class _InputStreamMixin(object):
             ndarray or memoryview object with `blocksize` elements.
         """
         blocksize = self.blocksize
-        assert not self.active, "Stream has already been started!"
         if not blocksize:
             raise ValueError("Requires a fixed known blocksize")
         if _np is None and always_2d:
@@ -353,20 +369,21 @@ class _InputStreamMixin(object):
         incframes = blocksize - overlap
         ringbuff = self.rxbuff
         dt = int(1e3*(incframes / float(self.samplerate))) / 1e3
-        with self:
-            while not self.aborted:
-                # for thread safety, check the stream is active *before* reading
-                active = self.active 
-                nframes = ringbuff.read(outbuff[overlap:], incframes)
-                if nframes == 0:
-                    if not active: break
-                    self._rmisses += 1
-                    self.wait(dt)
-                    continue
 
-                yield yielder(outbuff[:overlap + nframes]) if copy else outbuff[:overlap + nframes]
+        self.start()
+        while not self.aborted:
+            # for thread safety, check the stream is active *before* reading
+            active = self.active 
+            nframes = ringbuff.read(outbuff[overlap:], incframes)
+            if nframes == 0:
+                if not active: break
+                self._rmisses += 1
+                self.wait(dt)
+                continue
 
-                outbuff[:-incframes] = outbuff[incframes:]
+            yield yielder(outbuff[:overlap + nframes]) if copy else outbuff[:overlap + nframes]
+
+            outbuff[:-incframes] = outbuff[incframes:]
 
 class BufferedInputStream(_InputStreamMixin, _BufferedStreamBase):
     def __init__(self, **kwargs):
@@ -453,10 +470,11 @@ class _ThreadedStreamBase(_BufferedStreamBase):
 
     def start(self):
         if self.txt is not None:
+            self._finished.clear()
+            self._aborted.clear()
             self.txt.start()
             while self.txbuff.write_available and self.txt.is_alive():
                 _time.sleep(0.05)
-            if self.aborted: return
         super(_ThreadedStreamBase, self).start()
         if self.rxt is not None:
             self.rxt.start()
@@ -659,7 +677,7 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
 
         dt = len(txbuff) / stream.samplerate / 2
         buff = memoryview(bytearray(stream.fileblocksize*framesize))
-        while not (stream.aborted or stream.stopped):
+        while not (stream.aborted or stream.finished):
             nframes = min(txbuff.write_available, stream.fileblocksize)
             if nframes == 0:
                 stream._wmisses += 1
