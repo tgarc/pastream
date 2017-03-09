@@ -13,7 +13,7 @@ typedef struct Py_PaCallbackInfo {
 
 typedef struct Py_PaBufferedStream {
     PaStreamCallbackFlags status;
-    int completed;                // used to check whether a stream was aborted
+    int last_callback;
     int abort_on_xrun;
     unsigned long frame_count;
     unsigned long nframes;        // Number of frames to play/record (0 means unlimited)

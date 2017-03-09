@@ -224,17 +224,32 @@ def test_pad_offset_nframes(random_soundfile_input, devargs):
     assert nframes == 8192
  
 def test_stream_replay(devargs):   
-    stream = ps.BufferedStream(buffersize=8192, **devargs)
+    stream = ps.BufferedStream(buffersize=65536, **devargs)
     data = bytearray(len(stream.txbuff)*stream.txbuff.elementsize)
+
+    # Start and let stream finish
     stream.txbuff.write(data)
     stream.start()
-    assert stream.wait(0.5), "Timed out!"
+    assert stream.wait(2), "Timed out!"
     assert stream.finished
+
+    # Start stream, wait, then abort it
     stream.txbuff.write(data)
     stream.start()
     assert stream.active
+    stream.wait(0.05)
     stream.abort()
+    assert stream.wait(2), "Timed out!"
     assert stream.aborted
+
+    # Start stream then stop it
+    stream.txbuff.write(data)
+    stream.start()
+    assert stream.active
+    stream.wait(0.05)
+    stream.stop()
+    assert stream.wait(2), "Timed out!"
+    assert stream.stopped
     stream.close()
 
 # For testing purposes

@@ -132,15 +132,14 @@ class _BufferedStreamBase(_sd._StreamBase):
         self.__nframes = nframes
         if kwargs.get('callback', None) is None:
             cbinfo = _ffi.new("Py_PaCallbackInfo*", { 'call_count': 0, 'xruns': 0 } )
-            userdata = {'status': 0,
-                        'duplexity': ['input', 'output', 'duplex'].index(kind) + 1,
+            userdata = {'duplexity': ['input', 'output', 'duplex'].index(kind) + 1,
+                        'last_callback': -1,
                         'abort_on_xrun': int(raise_on_xruns),
-                        'completed': 0,
-                        'frame_count': 0,
                         'nframes': nframes + pad if nframes else nframes,
                         'padframes': pad,
                         'callbackInfo': cbinfo,
                         'offset': offset,
+                        'frame_count': 0,
                         'errorMsg': b'', }
             if self.rxbuff is not None:
                 userdata['rxbuff'] = _ffi.cast('PaUtilRingBuffer*', self.rxbuff._ptr)
@@ -168,10 +167,9 @@ class _BufferedStreamBase(_sd._StreamBase):
         # TODO: add support for C finished_callback function pointer
         user_callback = kwargs.get('finished_callback', lambda : None)
         def finished_callback():
-            # If the stream was stopped before it was completed AND
-            # the user has not called stop()/abort() then the stream
-            # must've been aborted
-            if not (self._cstream.completed or self.stopped):
+            # It's possible that the callback aborted itself so check
+            # if we need to update our aborted flag here
+            if self._cstream.last_callback == _sd._lib.paAbort:
                 self._aborted.set()
             self._finished.set()
 
@@ -259,8 +257,11 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     @nframes.setter
     def nframes(self, value):
+        if value:
+            self._cstream.nframes = value + self._cstream.padframes
+        else:
+            self._cstream.nframes = value
         self.__nframes = value
-        self._cstream.nframes = self.__nframes + self._cstram.padframes
 
     def __exit__(self, *args):
         try:
@@ -278,12 +279,12 @@ class _BufferedStreamBase(_sd._StreamBase):
 
         self._aborted.clear()
         self._finished.clear()
+        self._cstream.last_callback = -1
         self._cstream.callbackInfo.call_count = 0
         self._cstream.callbackInfo.xruns = 0
         self._cstream.status = 0
-        self._cstream.completed = 0
         self._cstream.frame_count = 0
-        self._cstream.nframes = self.__nframes
+        self.nframes = self.__nframes
         self._cstream.errorMsg = b''
         if self.rxbuff is not None:
             self.rxbuff.flush()
@@ -294,6 +295,7 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     def abort(self):
         super(_BufferedStreamBase, self).abort()
+        self._aborted.set()
         # defer exceptions coming from child threads
         if isinstance(_threading.current_thread(), _threading._MainThread):
             self._raise_exceptions()
