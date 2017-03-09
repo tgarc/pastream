@@ -26,7 +26,7 @@ else:
     DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'blocksize': 512,
                       'channels': 1, 'samplerate': 48000 }
 
-#DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
+DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
 
 if 'SOUNDDEVICE_DEVICE_NAME' in os.environ:
     DEVICE_KWARGS['device'] = os.environ['SOUNDDEVICE_DEVICE_NAME']
@@ -214,7 +214,7 @@ def test_pad_offset_nframes(random_soundfile_input, devargs):
     assert ntrunc == 0
 
     # Using offset only should drop 'offset' frames from the recording
-    offset = 2048
+    offset = 8 # use a minimal offset so we don't drop the original input frames
     mframes, nframes = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
     assert nframes == (len(inp_fh) - offset)
 

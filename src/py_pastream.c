@@ -64,7 +64,7 @@ int callback(
             if ( !stream->nframes ) {
                 // Figure out how much additional padding to insert and set nframes
                 // equal to it
-                stream->nframes = stream->frame_count + oframes + stream->padframes;
+                stream->nframes = stream->frame_count + oframes + stream->padding;
                 // (2) We don't want to do an unncessary callback; end here
                 if (stream->frame_count + frames_left >= stream->nframes) {
                     frames_left = stream->nframes - stream->frame_count;

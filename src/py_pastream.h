@@ -17,7 +17,7 @@ typedef struct Py_PaBufferedStream {
     int abort_on_xrun;
     unsigned long frame_count;
     unsigned long nframes;        // Number of frames to play/record (0 means unlimited)
-    unsigned long padframes;      // Number of zero frames to pad the input with
+    unsigned long padding;        // Number of zero frames to pad the input with
     unsigned long offset;         // Number of frames to skip from beginning of recordings
     duplexity_t duplexity;        
     PaUtilRingBuffer* rxbuff;     // Receive buffer

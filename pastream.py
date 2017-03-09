@@ -65,9 +65,9 @@ class _BufferedStreamBase(_sd._StreamBase):
     Parameters
     -----------
     nframes : int
-        Number of frames to play/record. (0 means unlimited). This does not
+        Number of frames to play/record. (0 means unlimited). This does *not*
         include the length of any additional padding.
-    pad : int
+    padding : int
         Number of zero frames to pad the output with. This has no effect on the
         input.
     offset : int
@@ -79,9 +79,6 @@ class _BufferedStreamBase(_sd._StreamBase):
     blocksize : int
         Portaudio buffer size. If None, the Portaudio backend will
         automatically determine a size.
-    qsize : int
-        Transmit/receive queue size in units of frames. Increase for
-        smaller blocksizes.
 
     Other Parameters
     ----------------
@@ -98,7 +95,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         The audio frame size in bytes. Equivalent to
         channels*samplesize.
     """
-    def __init__(self, kind, nframes=0, pad=0, offset=0, buffersize=_PA_BUFFERSIZE,
+    def __init__(self, kind, nframes=0, padding=0, offset=0, buffersize=_PA_BUFFERSIZE,
                  raise_on_xruns=False, blocksize=None, device=None,
                  channels=None, dtype=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
@@ -135,8 +132,8 @@ class _BufferedStreamBase(_sd._StreamBase):
             userdata = {'duplexity': ['input', 'output', 'duplex'].index(kind) + 1,
                         'last_callback': -1,
                         'abort_on_xrun': int(raise_on_xruns),
-                        'nframes': nframes + pad if nframes else nframes,
-                        'padframes': pad,
+                        'nframes': nframes + padding if nframes else nframes,
+                        'padding': padding,
                         'callbackInfo': cbinfo,
                         'offset': offset,
                         'frame_count': 0,
@@ -157,7 +154,6 @@ class _BufferedStreamBase(_sd._StreamBase):
         # ringbuffer.
         self._aborted = _threading.Event()
         self._finished = _threading.Event()
-        self._finished.set()
 
         # To simplify things, we only care about the first exception
         # raised
@@ -245,20 +241,28 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     @property
     def padding(self):
-        return self._cstream.padframes
+        return self._cstream.padding
 
     @padding.setter
     def padding(self, value):
-        self._cstream.padframes = value
-
+        # Note that the py_pastream callback doesn't act on `padding` unless
+        # nframes == 0; thus, set `nframes` first to get deterministic
+        # behavior.
+        if self.__nframes:
+            self.__nframes = self._cstream.nframes = value + self.__nframes
+        self._cstream.padding = value
+    
     @property
     def nframes(self):
+        # We fib a bit here: __nframes != _cstream.nframes. The former doesn't
+        # include any padding.
         return self.__nframes
 
     @nframes.setter
     def nframes(self, value):
+        # Set nframes in an atomic manner
         if value:
-            self._cstream.nframes = value + self._cstream.padframes
+            self._cstream.nframes = value + self._cstream.padding
         else:
             self._cstream.nframes = value
         self.__nframes = value
@@ -940,7 +944,7 @@ def _main(argv=None):
     sfkwargs=dict()
     stream = SoundFileStreamFactory(args.input, args.output, buffersize=args.qsize,
                                     nframes=args.nframes,
-                                    pad=args.pad,
+                                    padding=args.pad,
                                     offset=args.offset,
                                     sfkwargs={
                                         'endian': args.endian,
