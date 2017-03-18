@@ -23,7 +23,14 @@ setup(name='pastream',
           ],
       setup_requires=['CFFI>=1.4.0'],
       tests_require=['pytest>=3.0', 'numpy'],
-      extras_require={'numpy': 'numpy'},
-      py_modules=['pastream', 'pa_ringbuffer'],
+      extras_require={'examples': ['numpy', 'matplotlib']},
+      py_modules=['pastream'],
       include_package_data=True,
+      classifiers=[
+          'Operating System :: OS Independent',
+          'Programming Language :: Python',
+          'Programming Language :: Python :: 2',
+          'Programming Language :: Python :: 3',
+          'Topic :: Multimedia :: Sound/Audio'
+          ],
       zip_safe=False)

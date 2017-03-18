@@ -11,7 +11,6 @@ import numpy.testing as npt
 import soundfile as sf
 import sounddevice as sd
 import pastream as ps
-import pa_ringbuffer
 
 
 # Set up the platform specific device
@@ -26,7 +25,7 @@ else:
     DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'blocksize': 512,
                       'channels': 1, 'samplerate': 48000 }
 
-DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
+#DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
 
 if 'SOUNDDEVICE_DEVICE_NAME' in os.environ:
     DEVICE_KWARGS['device'] = os.environ['SOUNDDEVICE_DEVICE_NAME']
@@ -85,17 +84,15 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
           % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
 
-def assert_blockstream_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
+def assert_blocks_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
     inp_fh.seek(0)
-    stream = ps.SoundFileStream(inp_fh, **devargs)
-
-    try:
+    with ps.SoundFileStream(inp_fh, **devargs) as stream:
         # 'tee' the transmit queue writer so that we can recall any
         # input and match it to the output.
-        inpbuff = pa_ringbuffer.RingBuffer(stream.txbuff.elementsize, 4*len(stream.txbuff))
+        inpbuff = ps.RingBuffer(stream.txbuff.elementsize, 4*len(stream.txbuff))
         writer = stream.txbuff.write
         def teewrite(buff, size=-1):
             nframes1 = writer(buff, size)
@@ -109,7 +106,7 @@ def assert_blockstream_equal(inp_fh, preamble, compensate_delay=False, **kwargs)
         unsigned_dtype = 'u%d'%stream.samplesize[1]
         nframes = mframes = 0
         inframes = np.zeros((stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
-        for outframes in stream.blockstream(always_2d=True):
+        for outframes in stream.blocks(always_2d=True):
             if not found_delay:
                 matches = outframes[:, 0].view(unsigned_dtype) == preamble
                 if np.any(matches): 
@@ -128,15 +125,13 @@ def assert_blockstream_equal(inp_fh, preamble, compensate_delay=False, **kwargs)
                 mframes += readframes
             nframes += len(outframes)
         assert delay != -1, "Preamble not found or was corrupted"
-    finally:
-        stream.close()
 
     stats = mframes, nframes, delay, inpbuff.read_available, stream._rmisses
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %d misses" 
           % stats)
     return stats
 
-def gen_random(rdm_fh, nseconds, elementsize):
+def gen_random(nseconds, samplerate, channels, elementsize):
     """
     Generates a uniformly random integer signal ranging between the
     minimum and maximum possible values as defined by `elementsize`. The random
@@ -151,13 +146,13 @@ def gen_random(rdm_fh, nseconds, elementsize):
     minval = -(0x80000000>>shift)
     maxval = 0x7FFFFFFF>>shift
 
-    preamble = np.zeros((rdm_fh.samplerate//10, rdm_fh.channels), dtype=np.int32)
+    preamble = np.zeros((samplerate//10, channels), dtype=np.int32)
     preamble[:] = (PREAMBLE >> shift) << shift
-    rdm_fh.write(preamble)
+    yield preamble
 
     for i in range(nseconds):
-        pattern = np.random.randint(minval, maxval+1, (rdm_fh.samplerate, rdm_fh.channels)) << shift
-        rdm_fh.write(pattern.astype(np.int32))
+        pattern = np.random.randint(minval, maxval+1, (samplerate, channels)) << shift
+        yield pattern.astype(np.int32)
 
 @pytest.fixture
 def random_soundfile_input(scope='module'):
@@ -171,7 +166,8 @@ def random_soundfile_input(scope='module'):
                           format='wav')
 
     with rdm_fh:
-        gen_random(rdm_fh, 1, elementsize)
+        for blk in gen_random(1, rdm_fh.samplerate, rdm_fh.channels, elementsize):
+            rdm_fh.write(blk)
         rdm_fh.seek(0)
 
         dtype = DEVICE_KWARGS['dtype']
@@ -188,11 +184,11 @@ def random_soundfile_input(scope='module'):
 def devargs():
     return dict(DEVICE_KWARGS)
 
-def test_blockstream_loopback(random_soundfile_input):
+def test_blocks_loopback(random_soundfile_input):
     inp_fh, preamble, dtype = random_soundfile_input
-    assert_blockstream_equal(inp_fh, preamble, dtype=dtype)
+    assert_blocks_equal(inp_fh, preamble, dtype=dtype)
 
-def test_soundfile_loopback(random_soundfile_input, devargs):
+def test_SoundFileStream_loopback(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
     devargs['dtype'] = dtype
@@ -200,6 +196,7 @@ def test_soundfile_loopback(random_soundfile_input, devargs):
 
     outf = tempfile.TemporaryFile()
     with ps.SoundFileStream(inp_fh, outf, **devargs) as stream:
+        stream.start()
         stream.wait()
 
     outf.seek(0); inp_fh.seek(0)
@@ -210,47 +207,46 @@ def test_pad_offset_nframes(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
     # If we compensate for the delay we should have no frames truncated
-    mframes, nframes, delay, ntrunc = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
+    mframes, nframes, delay, ntrunc = assert_blocks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
     assert ntrunc == 0
 
     # Using offset only should drop 'offset' frames from the recording
     offset = 8 # use a minimal offset so we don't drop the original input frames
-    mframes, nframes = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
+    mframes, nframes = assert_blocks_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
     assert nframes == (len(inp_fh) - offset)
 
     # If we offset and pad the recording using a known fixed delay we should
     # have an *exact* match
-    mframes, nframes, delay = assert_blockstream_equal(inp_fh, preamble, dtype=dtype, nframes=8192)[:3]
+    mframes, nframes, delay = assert_blocks_equal(inp_fh, preamble, dtype=dtype, nframes=8192)[:3]
     assert nframes == 8192
  
 def test_stream_replay(devargs):   
-    stream = ps.BufferedStream(buffersize=65536, **devargs)
-    data = bytearray(len(stream.txbuff)*stream.txbuff.elementsize)
+    with ps.BufferedStream(buffersize=65536, **devargs) as stream:
+        data = bytearray(len(stream.txbuff)*stream.txbuff.elementsize)
 
-    # Start and let stream finish
-    stream.txbuff.write(data)
-    stream.start()
-    assert stream.wait(2), "Timed out!"
-    assert stream.finished
+        # Start and let stream finish
+        stream.txbuff.write(data)
+        stream.start()
+        assert stream.wait(2), "Timed out!"
+        assert stream.finished
 
-    # Start stream, wait, then abort it
-    stream.txbuff.write(data)
-    stream.start()
-    assert stream.active
-    stream.wait(0.05)
-    stream.abort()
-    assert stream.wait(2), "Timed out!"
-    assert stream.aborted
+        # Start stream, wait, then abort it
+        stream.txbuff.write(data)
+        stream.start()
+        assert stream.active
+        stream.wait(0.05)
+        stream.abort()
+        assert stream.wait(2), "Timed out!"
+        assert stream.aborted
 
-    # Start stream then stop it
-    stream.txbuff.write(data)
-    stream.start()
-    assert stream.active
-    stream.wait(0.05)
-    stream.stop()
-    assert stream.wait(2), "Timed out!"
-    assert stream.stopped
-    stream.close()
+        # Start stream then stop it
+        stream.txbuff.write(data)
+        stream.start()
+        assert stream.active
+        stream.wait(0.05)
+        stream.stop()
+        assert stream.wait(2), "Timed out!"
+        assert stream.stopped
 
 # For testing purposes
 class MyException(Exception):
@@ -262,6 +258,7 @@ def test_deferred_exception_handling(devargs):
     with pytest.raises(MyException) as excinfo:
         with stream:
             stream._set_exception(MyException("BOO-urns!"))
+            stream.start()
             stream.wait()
 
 def test_threaded_write_deferred_exception_handling(devargs):
@@ -273,6 +270,7 @@ def test_threaded_write_deferred_exception_handling(devargs):
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
+            stream.start()
             assert stream.wait(0.5), "Timed out!"
     assert str(excinfo.value) == txmsg
 
@@ -286,5 +284,6 @@ def test_threaded_read_deferred_exception_handling(devargs):
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
+            stream.start()
             assert stream.wait(0.5), "Timed out!"
     assert str(excinfo.value) == rxmsg
