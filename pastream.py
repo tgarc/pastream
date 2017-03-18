@@ -369,6 +369,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         # finished.  We can use them to abort writing of the
         # ringbuffer.
         self.__cond = _threading.Condition()
+        self.__streamlock = _threading.Lock()
         self.__state = 0
         self.__aborting = False
         self.__closed = False
@@ -516,8 +517,8 @@ class _BufferedStreamBase(_sd._StreamBase):
 
         with self.__cond:
             self.__state = 0
-            self.__aborting = False
-            self.__closed = False
+        self.__aborting = False
+        self.__closed = False
         self._cstream.last_callback = -1
         self._cstream.callbackInfo.call_count = 0
         self._cstream.callbackInfo.xruns = 0
@@ -533,24 +534,23 @@ class _BufferedStreamBase(_sd._StreamBase):
         super(_BufferedStreamBase, self).start()
 
     def stop(self):
-        super(_BufferedStreamBase, self).stop()
+        with self.__streamlock:
+            super(_BufferedStreamBase, self).stop()
         if isinstance(_threading.current_thread(), _threading._MainThread):
             self._raise_exceptions()
 
     def abort(self):
-        # This function is *not* thread safe, so we don't bother protecting
-        # `aborting` with a lock
-        self.__aborting = True
-        super(_BufferedStreamBase, self).abort()
+        with self.__streamlock:
+            self.__aborting = True
+            super(_BufferedStreamBase, self).abort()
         # defer exceptions coming from child threads
         if isinstance(_threading.current_thread(), _threading._MainThread):
             self._raise_exceptions()
 
     def close(self):
-        # This function is *not* thread safe, so we don't bother protecting
-        # `closed` with a lock
-        self.__closed = True
-        super(_BufferedStreamBase, self).close()
+        with self.__streamlock:
+            self.__closed = True
+            super(_BufferedStreamBase, self).close()
         if isinstance(_threading.current_thread(), _threading._MainThread):
             self._raise_exceptions()
 
@@ -735,21 +735,21 @@ class _ThreadedStreamBase(_BufferedStreamBase):
 
     def abort(self):
         try:
-            self._stopiothreads()
-        finally:
             super(_ThreadedStreamBase, self).abort()
+        finally:
+            self._stopiothreads()
 
     def stop(self):
         try:
-            self._stopiothreads()
-        finally:
             super(_ThreadedStreamBase, self).stop()
+        finally:
+            self._stopiothreads()
 
     def close(self):
         try:
-            self._stopiothreads()
-        finally:
             super(_ThreadedStreamBase, self).close()
+        finally:
+            self._stopiothreads()
 
 class ThreadedInputStream(_InputStreamMixin, _ThreadedStreamBase):
     """
@@ -915,7 +915,6 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
                 stream._rmisses += 1
                 stream.wait(dt)
                 continue
-
             stream.out_fh.buffer_write(buff[:nframes*framesize], dtype=dtype)
 
     # Default handler for reading input from a SoundFile object and writing it to a
@@ -1246,7 +1245,7 @@ def _main(argv=None):
 
     cbinfo = stream.callback_info
     print("Callback info:")
-    print("\tFrames processed: %d (%7.3fms)" % (stream.frame_count, 1e3*stream.frame_count/stream.samplerate))
+    print("\tFrames processed: %d ( %7.3fs )" % (stream.frame_count, stream.frame_count/float(stream.samplerate)))
     print("\tcallback serviced %d times" % cbinfo.call_count)
     print("\txruns: %d" % cbinfo.xruns)
     print("\tDelta range (ms): [ {:7.3f}, {:7.3f}]".format(1e3*(cbinfo.min_dt), 1e3*(cbinfo.max_dt)))
