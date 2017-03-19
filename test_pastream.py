@@ -263,10 +263,10 @@ def test_deferred_exception_handling(devargs):
 
 def test_threaded_write_deferred_exception_handling(devargs):
     txmsg = "BOO-urns!"
-    def qwriter(stream, ringbuff):
+    def writer(stream, ringbuff):
         raise MyException(txmsg)
 
-    stream = ps.ThreadedStream(buffersize=8192, qwriter=qwriter, **devargs)
+    stream = ps.BufferedStream(buffersize=8192, writer=writer, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
@@ -276,11 +276,11 @@ def test_threaded_write_deferred_exception_handling(devargs):
 
 def test_threaded_read_deferred_exception_handling(devargs):
     rxmsg = "BOO!"
-    def qreader(stream, ringbuff):
+    def reader(stream, ringbuff):
         raise MyException(rxmsg)
 
     # A reader exception should also stop the stream
-    stream = ps.ThreadedStream(buffersize=8192, qreader=qreader, **devargs)
+    stream = ps.BufferedStream(buffersize=8192, reader=reader, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:

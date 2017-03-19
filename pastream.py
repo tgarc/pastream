@@ -42,9 +42,17 @@ _FINISHED = 1
 _ABORTED = 2
 _STOPPED = 4
 
-class AudioBufferError(Exception):
+class PaStreamException(Exception):
+    pass
+ 
+class AudioBufferError(PaStreamException):
     pass
 
+class XRunError(AudioBufferError):
+    pass
+
+class ReceiveBufferFull(AudioBufferError):
+    pass
 
 class RingBuffer(object):
     # Copyright (c) 2017 Matthias Geier
@@ -261,22 +269,25 @@ class RingBuffer(object):
 
 class _BufferedStreamBase(_sd._StreamBase):
     """
-    This class adds a python Queue for reading and writing audio
+    This class adds a RingBuffer for reading and writing audio
     data. This double buffers the audio data so that any processing is
-    kept out of the time sensitive audio callback function. For
-    maximum flexibility, receive queue data is a bytearray object;
-    transmit queue data should be of a buffer type where each element
-    is a single byte.
+    kept out of the time sensitive audio callback function.
 
     Notes:
 
-    If the receive buffer fills or the transmit buffer is found empty
-    during a callback the audio stream is aborted and an exception is
-    raised.
+    If the receive buffer fills during a callback the audio stream is
+    aborted and an exception is raised.
 
     During playback, the end of the stream is signaled by an item on
     the queue that is smaller than blocksize*channels*samplesize
     bytes.
+
+    This class adds the ability to register functions (`reader`,
+    `writer`) for reading and writing audio data which run in their own
+    threads. However, the reader and writer threads are optional; this
+    allows the use of a 'duplex' stream which e.g. has a dedicated
+    thread for writing data but for which receive data is read directly
+    in the owning thread.
 
     Parameters
     -----------
@@ -292,14 +303,20 @@ class _BufferedStreamBase(_sd._StreamBase):
     buffersize : int
         Transmit/receive buffer size in units of frames. Increase for smaller
         blocksizes.
-    blocksize : int
-        Portaudio buffer size. If None, the Portaudio backend will
+    reader, writer : function
+        Buffer reader and writer functions to be run in a separate
+        thread.
+    raise_on_xruns : bool
+        If True, the stream will be aborted and XRunError will be raised
+        on the first occurrence of any underflow/overflow conditions.
+    blocksize : int or None
+        Portaudio buffer size. If None or 0, the Portaudio backend will
         automatically determine a size.
 
     Other Parameters
     ----------------
-    kind, channels, dtype, **kwargs
-        Additional parameters to pass to StreamBase.
+    kind, device, channels, dtype, **kwargs
+        Additional parameters to pass to `sounddevice._StreamBase`.
 
     Attributes
     ----------
@@ -308,10 +325,10 @@ class _BufferedStreamBase(_sd._StreamBase):
     rxbuff : Ringbuffer
         RingBuffer used for reading audio data from the input Portaudio stream.
     framesize : int
-        The audio frame size in bytes. Equivalent to
-        channels*samplesize.
+        The audio frame size in bytes. Equivalent to channels*samplesize.
     """
-    def __init__(self, kind, nframes=0, padding=0, offset=0, buffersize=_PA_BUFFERSIZE,
+    def __init__(self, kind, nframes=0, padding=0, offset=0,
+                 buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
                  raise_on_xruns=False, blocksize=None, device=None,
                  channels=None, dtype=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
@@ -368,7 +385,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         # These flags are used to tell when the callbacks have
         # finished.  We can use them to abort writing of the
         # ringbuffer.
-        self.__cond = _threading.Condition()
+        self.__statecond = _threading.Condition()
         self.__streamlock = _threading.Lock()
         self.__state = 0
         self.__aborting = False
@@ -377,7 +394,22 @@ class _BufferedStreamBase(_sd._StreamBase):
         # To simplify things, we only care about the first exception
         # raised
         # TODO: handle multiple deferred exceptions
-        self._exceptions = _queue.Queue(1)
+        self.__exceptions = _queue.Queue(1)
+
+        # set up reader/writer threads
+        self._owner_thread = _threading.current_thread()
+        self._txthread = None
+        if (kind == 'duplex' or kind == 'output') and writer is not None:
+            self._txthread_args = {'target': self._readwritewrapper,
+                                   'args': (self.txbuff, writer)}
+        else:
+            self._txthread_args = None
+        self._rxthread = None
+        if (kind == 'duplex' or kind == 'input') and reader is not None:
+            self._rxthread_args = {'target': self._readwritewrapper,
+                                   'args': (self.rxbuff, reader)}
+        else:
+            self._rxthread_args = None
 
         # TODO: add support for C finished_callback function pointer
         user_callback = kwargs.get('finished_callback', lambda : None)
@@ -389,22 +421,26 @@ class _BufferedStreamBase(_sd._StreamBase):
             # callback
             # Note: exceptions from the callback take precedence over
             # any xrun exceptions
-            msg = _ffi.string(self._cstream.errorMsg)
+            msg = _ffi.string(self._cstream.errorMsg).decode('utf-8')
             if len(msg):
-                self._set_exception(AudioBufferError(msg))
-            if self._cstream.abort_on_xrun and self._cstream.status & 0xF:
-                self._set_exception(AudioBufferError(str(self.status)))
-
-            with self.__cond:
+                exctype = getattr(_sys.modules[__name__], msg.split(':', 1)[0])
+                if exctype is XRunError:
+                    self._set_exception(XRunError(str(self.status)))
+                else:
+                    self._set_exception(exctype)
+                
+            with self.__statecond:
                 # It's possible that the callback aborted itself so check
                 # if we need to update our aborted flag here
-                if self._cstream.last_callback == _sd._lib.paAbort or self.__aborting:
+                if (self._cstream.last_callback == _sd._lib.paAbort
+                    or self.__aborting
+                    or not self.__exceptions.empty()):
                     self.__state = _ABORTED | _FINISHED
                 elif self._cstream.last_callback == _sd._lib.paComplete:
                     self.__state = _FINISHED
                 else:
                     self.__state = _STOPPED | _FINISHED
-                self.__cond.notify_all()
+                self.__statecond.notify_all()
 
         super(_BufferedStreamBase, self).__init__(kind, blocksize=blocksize,
                                                   device=device,
@@ -418,12 +454,41 @@ class _BufferedStreamBase(_sd._StreamBase):
         else:
             self._device_name = tuple(_sd.query_devices(dev)['name'] for dev in self._device)
 
-    def _raise_exceptions(self):
+    def __stopiothreads(self):
+        currthread = _threading.current_thread()
+        if (self._rxthread is not None
+            and self._rxthread.is_alive()
+            and self._rxthread != currthread):
+            self._rxthread.join()
+        if (self._txthread is not None
+            and self._txthread.is_alive()
+            and self._txthread != currthread):
+            self._txthread.join()
+
+    def _readwritewrapper(self, buff, rwfunc):
+        """\
+        Wrapper for the reader and writer functions which acts as a kind
+        of context manager.
+        """
         try:
-            exc = self._exceptions.get(block=False)
+            rwfunc(self, buff)
+        except:
+            # Defer the exception and delegate responsibility to the owner
+            # thread
+            self._set_exception()
+            self.abort()
+
+    def _reraise_exceptions(self):
+        """\
+        Raise the last deferred exception if one exists. If the caller's
+        thread is not the stream owner this function does nothing.
+        """
+        if _threading.current_thread() is not self._owner_thread:
+            return
+        try:
+            exc = self.__exceptions.get(block=False)
         except _queue.Empty:
             return
-
         if isinstance(exc, tuple):
             exctype, excval, exctb = exc
             if exctype is not None:
@@ -436,45 +501,80 @@ class _BufferedStreamBase(_sd._StreamBase):
             raise exc
 
     def _set_exception(self, exc=None):
+        """\
+        Queue an exception to be re-raised later using `_reraise_exceptions`.
+        """
         try:
-            self._exceptions.put(exc or _sys.exc_info(), block=False)
+            self.__exceptions.put(exc or _sys.exc_info(), block=False)
         except _queue.Full:
             pass
 
     def wait(self, timeout=None):
-        with self.__cond:
+        """\
+        Block until portaudio stream has finished processing all data or
+        has been aborted/stopped.
+
+        NB: This function does not wait for receive buffer to empty.
+        """
+        with self.__statecond:
             if self.__state == 0:
-                self.__cond.wait(timeout)
+                self.__statecond.wait(timeout)
+                self._reraise_exceptions()
             return self.__state > 0
 
     # Make 'active' thread safe by checking if close has been called on the
     # stream yet
     @property
     def active(self):
+        """\
+        Check whether stream is active with the additional condition
+        that if the stream has been closed this will always return False.
+        """
         return not self.__closed and super(_BufferedStreamBase, self).active
 
     @property
     def aborted(self):
+        """\
+        Whether stream has been aborted. If True, it is
+        guaranteed that the stream is in a finished state.
+        """
         return self.__state & _ABORTED > 0
     
     @property
     def finished(self):
+        """\
+        Whether the portaudio stream is in a finished state. Will only
+        be True if `start()` has been called and the stream either
+        completed sucessfully or was stopped/aborted.
+        """
         return self.__state & _FINISHED > 0
+
+    @property
+    def status(self):
+        """\
+        The current PaStreamCallbackFlags status of the portaudio
+        stream.
+        """
+        return _sd.CallbackFlags(self._cstream.status)
 
     @property
     def callback_info(self):
         return self._cstream.callbackInfo
 
     @property
-    def status(self):
-        return _sd.CallbackFlags(self._cstream.status)
-
-    @property
     def frame_count(self):
+        """\
+        Running total of frames that have been processed. Each new
+        starting of the stream resets this number to zero.
+        """
         return self._cstream.frame_count
 
     @property
     def padding(self):
+        """\
+        Number of frames of padding that will be added to the input
+        stream.
+        """
         return self._cstream.padding
 
     @padding.setter
@@ -488,6 +588,10 @@ class _BufferedStreamBase(_sd._StreamBase):
     
     @property
     def nframes(self):
+        """\
+        Total number of frames to be processed by the stream. Returns
+        zero if no limit is set.
+        """
         # We fib a bit here: __nframes != _cstream.nframes. The former doesn't
         # include any padding.
         return self.__nframes
@@ -515,7 +619,8 @@ class _BufferedStreamBase(_sd._StreamBase):
         # streamFinishedCallback will never be called
         super(_BufferedStreamBase, self).stop()
 
-        with self.__cond:
+        # Reset stream state
+        with self.__statecond:
             self.__state = 0
         self.__aborting = False
         self.__closed = False
@@ -529,30 +634,43 @@ class _BufferedStreamBase(_sd._StreamBase):
         if self.rxbuff is not None:
             self.rxbuff.flush()
 
+        # Recreate the necessary threads
+        if self._rxthread_args is not None:
+            self._rxthread = _threading.Thread(**self._rxthread_args)
+            self._rxthread.daemon = True
+        if self._txthread_args is not None:
+            self._txthread = _threading.Thread(**self._txthread_args)
+            self._txthread.daemon = True
+
     def start(self):
         self._prepare_start()
+        if self._txthread is not None:
+            self._txthread.start()
+            while self.txbuff.write_available and self._txthread.is_alive():
+                _time.sleep(0.05)
         super(_BufferedStreamBase, self).start()
+        if self._rxthread is not None:
+            self._rxthread.start()
 
     def stop(self):
         with self.__streamlock:
             super(_BufferedStreamBase, self).stop()
-        if isinstance(_threading.current_thread(), _threading._MainThread):
-            self._raise_exceptions()
+        self.__stopiothreads()
+        self._reraise_exceptions()        
 
     def abort(self):
         with self.__streamlock:
             self.__aborting = True
             super(_BufferedStreamBase, self).abort()
-        # defer exceptions coming from child threads
-        if isinstance(_threading.current_thread(), _threading._MainThread):
-            self._raise_exceptions()
+        self.__stopiothreads()
+        self._reraise_exceptions()
 
     def close(self):
         with self.__streamlock:
             self.__closed = True
             super(_BufferedStreamBase, self).close()
-        if isinstance(_threading.current_thread(), _threading._MainThread):
-            self._raise_exceptions()
+        self.__stopiothreads()
+        self._reraise_exceptions()
 
     def __repr__(self):
         return ("{0}({1._device_name!r}, samplerate={1._samplerate:.0f}, "
@@ -563,9 +681,8 @@ class _InputStreamMixin(object):
     # TODO: add buffer 'type' as an argument
     def blocks(self, overlap=0, always_2d=False, copy=False):
         """
-        Similar to SoundFile.blocks. Returns an iterator over audio chunks read from
-        a Portaudio stream. Can be either half-duplex (recording-only) or
-        full-duplex if an input file is supplied.
+        Similar to SoundFile.blocks. Returns an iterator over buffered audio
+        chunks read from a Portaudio stream.
 
         Parameters
         ----------
@@ -647,150 +764,11 @@ class BufferedStream(BufferedInputStream, BufferedOutputStream):
     def __init__(self, **kwargs):
         _BufferedStreamBase.__init__(self, 'duplex', **kwargs)
 
-class _ThreadedStreamBase(_BufferedStreamBase):
-    """
-    This class builds on the BufferedStream class by adding the ability to
-    register functions for reading (qreader) and writing (qwriter) audio data
-    which run in their own threads. However, the qreader and qwriter threads are
-    optional; this allows the use of a 'duplex' stream which e.g. has a
-    dedicated thread for writing data but for which data is read in the main
-    thread.
-
-    An important advantage with this class is that it properly handles any
-    exceptions raised in the qreader and qwriter threads. Specifcally, if an
-    exception is raised, the stream will be aborted and the exception re-raised
-    in the main thread.
-
-    Parameters
-    -----------
-    blocksize : int
-        Portaudio buffer size. If None, the Portaudio backend will automatically
-        determine a size.
-
-    Other Parameters
-    -----------------
-    kind, **kwargs
-        Additional parameters to pass to BufferedStreamBase.
-
-    Attributes
-    -----------
-    txt : Thread object
-        Daemon thread object that handles writing data to the output ring buffer.
-    rxt : Thread object
-        Daemon thread object that handles reading data from the input ring buffer.
-    """
-    def __init__(self, kind, qreader=None, qwriter=None, blocksize=None, **kwargs):
-        if qreader is None and qwriter is None:
-            raise ValueError("No qreader or qwriter function given.")
-
-        super(_ThreadedStreamBase, self).__init__(kind, blocksize=blocksize, **kwargs)
-
-        self._txt = None
-        if (kind == 'duplex' or kind == 'output') and qwriter is not None:
-            self._txt_args = {'target': self._qrwwrapper, 'args': (self.txbuff, qwriter)}
-        else:
-            self._txt_args = None
-
-        self._rxt = None
-        if (kind == 'duplex' or kind == 'input') and qreader is not None:
-            self._rxt_args = {'target': self._qrwwrapper, 'args': (self.rxbuff, qreader)}
-        else:
-            self._rxt_args = None
-
-    def _qrwwrapper(self, queue, qrwfunc):
-        """
-        Wrapper function for the qreader and qwriter threads which acts as a
-        kind of context manager.
-        """
-        try:
-            qrwfunc(self, queue)
-        except:
-            # Raise the exception in the main thread
-            self._set_exception()
-            self.abort()
-
-    def _stopiothreads(self):
-        currthread = _threading.current_thread()
-        if self._rxt is not None and self._rxt.is_alive() and self._rxt != currthread:
-            self._rxt.join()
-        if self._txt is not None and self._txt.is_alive() and self._txt != currthread:
-            self._txt.join()
-
-    def _prepare_start(self):
-        super(_ThreadedStreamBase, self)._prepare_start()
-        if self._rxt_args is not None:
-            self._rxt = _threading.Thread(**self._rxt_args)
-            self._rxt.daemon = True
-        if self._txt_args is not None:
-            self._txt = _threading.Thread(**self._txt_args)
-            self._txt.daemon = True
-            self._txt.start()
-            while self.txbuff.write_available and self._txt.is_alive():
-                _time.sleep(0.05)
-
-    def start(self):
-        super(_ThreadedStreamBase, self).start()
-        if self._rxt is not None:
-            self._rxt.start()
-
-    def abort(self):
-        try:
-            super(_ThreadedStreamBase, self).abort()
-        finally:
-            self._stopiothreads()
-
-    def stop(self):
-        try:
-            super(_ThreadedStreamBase, self).stop()
-        finally:
-            self._stopiothreads()
-
-    def close(self):
-        try:
-            super(_ThreadedStreamBase, self).close()
-        finally:
-            self._stopiothreads()
-
-class ThreadedInputStream(_InputStreamMixin, _ThreadedStreamBase):
-    """
-    Parameters
-    ----------
-    qreader : function
-        Function that handles reading from the receive queue. Will be called in
-        a seperate thread.
-    """
-    def __init__(self, qreader, **kwargs):
-        super(ThreadedInputStream, self).__init__('input',
-                                                  qreader=qreader, **kwargs)
-        
-class ThreadedOutputStream(_ThreadedStreamBase):
-    """
-    Parameters
-    ----------
-    qwriter : function
-        Function that handles writing to the transmit queue. Will be called in
-        a seperate thread.
-    """
-    def __init__(self, qwriter, **kwargs):
-        super(ThreadedOutputStream, self).__init__('output',
-                                                   qwriter=qwriter, **kwargs)
-
-class ThreadedStream(ThreadedInputStream, ThreadedOutputStream):
-    """
-    Parameters
-    ----------
-    qreader, qwriter : functions
-        Buffer reader and writer functions.
-    """
-    def __init__(self, qreader=None, qwriter=None, **kwargs):
-        _ThreadedStreamBase.__init__(self, 'duplex', qreader=qreader,
-                                     qwriter=qwriter, **kwargs)
-
-class _SoundFileStreamBase(_ThreadedStreamBase):
+class _SoundFileStreamBase(_BufferedStreamBase):
     """
     This helper class basically gives you two things:
 
-        1) it provides complete qreader and qwriter functions for SoundFile
+        1) it provides complete reader and writer functions for SoundFile
            objects (or anything that can be opened as a SoundFile object)
 
         2) it automatically sets parameters for the stream based on the input
@@ -824,17 +802,17 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
 
     Other Parameters
     ----------------------
-    qreader, qwriter, kind, fileblocksize, blocksize, **kwargs
-        Additional parameters to pass to _ThreadedStreamBase.
+    reader, writer, kind, fileblocksize, blocksize, **kwargs
+        Additional parameters to pass to _BufferedStreamBase.
     """
-    def __init__(self, kind, inpf=None, outf=None, qreader=None,
-                 qwriter=None, sfkwargs={}, fileblocksize=None,
+    def __init__(self, kind, inpf=None, outf=None, reader=None,
+                 writer=None, sfkwargs={}, fileblocksize=None,
                  blocksize=None, **kwargs):
         if not (fileblocksize or blocksize):
             raise ValueError("One or both of fileblocksize and blocksize must be non-zero.")
 
         # At this point we don't care what 'kind' the stream is, only whether
-        # the input/output is None which determines whether qreader/qwriter
+        # the input/output is None which determines whether reader/writer
         # functions should be registered
         self._inpf = inpf
         if self._inpf is not None:
@@ -846,20 +824,20 @@ class _SoundFileStreamBase(_ThreadedStreamBase):
                 kwargs['samplerate'] = self.inp_fh.samplerate
             if kwargs.get('channels', None) is None:
                 kwargs['channels'] = self.inp_fh.channels
-            if qwriter is None:
-                qwriter = self._soundfilereader
+            if writer is None:
+                writer = self._soundfilereader
         else:
             self.inp_fh = self._inpf
 
-        # We need to set the qreader here; output file parameters will known
+        # We need to set the reader here; output file parameters will known
         # once we open the stream
         self._outf = outf
-        if outf is not None and qreader is None:
-            qreader = self._soundfilewriter
+        if outf is not None and reader is None:
+            reader = self._soundfilewriter
         self.out_fh = None
 
-        super(_SoundFileStreamBase, self).__init__(kind, qreader=qreader,
-                                                   qwriter=qwriter,
+        super(_SoundFileStreamBase, self).__init__(kind, reader=reader,
+                                                   writer=writer,
                                                    blocksize=blocksize,
                                                    **kwargs)
 
@@ -996,9 +974,10 @@ class SoundFileOutputStream(_SoundFileStreamBase):
 
 class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
     """
-    Full duplex audio file streamer. Note that only one of inpf and outf is
-    required. This allows you to e.g. use a SoundFile as input but implement
-    your own qreader and/or read from the queue in the main thread.
+    Full duplex audio file streamer. Note that only one of inpf and outf
+    is required. This allows you to e.g. use a SoundFile as input but
+    implement your own reader and/or read from the buffer in the
+    stream's owner thread.
     """
     def __init__(self, inpf=None, outf=None, buffersize=_PA_BUFFERSIZE,
                  sfkwargs={}, fileblocksize=None, **kwargs):
@@ -1013,7 +992,7 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
                                       sfkwargs=sfkwargs, **kwargs)
 
 def blocks(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False,
-           qwriter=None, streamclass=None, **kwargs):
+           writer=None, streamclass=None, **kwargs):
     """
     Read audio data in chunks from a Portaudio stream. Can be either half-duplex
     (recording-only) or full-duplex (if an input file is supplied).
@@ -1034,8 +1013,8 @@ def blocks(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False,
 
     Other Parameters
     -----------------
-    qwriter : function
-        Function that handles writing to the audio transmit queue. Can be used
+    writer : function
+        Function that handles writing to the audio transmit buffer. Can be used
         as an alternative to or in combination with an input file.
     streamclass : object
         Base class to use. Typically this is automatically determined from the input arguments.
@@ -1047,12 +1026,12 @@ def blocks(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False,
     array
         ndarray or memoryview object with `blocksize` elements.
     """
-    kwargs['qwriter'] = qwriter
+    kwargs['writer'] = writer
     if inpf is None:
         if streamclass is None:
-            if qwriter is None:
+            if writer is None:
                 streamclass = BufferedInputStream
-                del kwargs['qwriter']
+                del kwargs['writer']
             else:
                 streamclass = ThreadedStream
 
@@ -1075,11 +1054,11 @@ def _SoundFileStreamFactory(inpf=None, outf=None, **kwargs):
         Streamer = SoundFileOutputStream
         ioargs = (inpf,)
         kwargs.pop('sfkwargs', None)
-        kwargs.pop('qreader', None)
+        kwargs.pop('reader', None)
     elif outf is not None:
         Streamer = SoundFileInputStream
         ioargs = (outf,)
-        kwargs.pop('qwriter', None)
+        kwargs.pop('writer', None)
     else:
         raise SystemExit("No input or output selected.")
 

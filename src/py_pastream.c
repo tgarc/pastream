@@ -40,6 +40,7 @@ int callback(
         stream->callbackInfo->xruns++;
         if (stream->abort_on_xrun) {
           stream->last_callback = paAbort;
+          strcpy(stream->errorMsg, "XRunError");
           return paAbort;
         }
     }
@@ -81,7 +82,7 @@ int callback(
             in_data = (unsigned char *) in_data + offset*stream->rxbuff->elementSizeBytes;
         }
         if (PaUtil_WriteRingBuffer(stream->rxbuff, (void *) in_data, frames_left) < frames_left) {
-            strcpy(stream->errorMsg, "Receive queue is full.");
+            strcpy(stream->errorMsg, "ReceiveBufferFull");
             stream->last_callback = paAbort;
             return paAbort;
         }
