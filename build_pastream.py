@@ -6,8 +6,13 @@ ffibuilder.cdef(r"""
 
 typedef double PaTime;
 typedef struct PaStreamCallbackTimeInfo PaStreamCallbackTimeInfo;
-typedef unsigned long PaStreamCallbackFlags;
 typedef long ring_buffer_size_t;
+typedef unsigned long PaStreamCallbackFlags;
+#define paInputUnderflow  0x00000001
+#define paInputOverflow   0x00000002
+#define paOutputUnderflow 0x00000004
+#define paOutputOverflow  0x00000008
+#define paPrimingOutput   0x00000010
 
 /* From pa_ringbuffer.h: */
 

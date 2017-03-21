@@ -36,6 +36,20 @@ int callback(
     stream->callbackInfo->call_count++;
 
     stream->status |= status;
+    switch (status) {
+        case paInputUnderflow :
+            stream->callbackInfo->inputUnderflows++;
+            break;
+        case paInputOverflow :
+            stream->callbackInfo->inputOverflows++;
+            break;
+        case paOutputUnderflow :
+            stream->callbackInfo->outputUnderflows++;
+            break;
+        case paOutputOverflow :
+            stream->callbackInfo->outputOverflows++;
+            break;
+    }
     if (status&0xF) {
         stream->callbackInfo->xruns++;
         if (stream->abort_on_xrun) {

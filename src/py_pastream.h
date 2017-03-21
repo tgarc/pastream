@@ -9,6 +9,8 @@ typedef struct Py_PaCallbackInfo {
     unsigned long call_count;
     unsigned long min_frame_count;
     unsigned long xruns;
+    unsigned long inputOverflows, inputUnderflows;
+    unsigned long outputOverflows, outputUnderflows;
 } Py_PaCallbackInfo;
 
 typedef struct Py_PaBufferedStream {

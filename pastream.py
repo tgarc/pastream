@@ -361,16 +361,13 @@ class _BufferedStreamBase(_sd._StreamBase):
         self.__weakref = _weakref.WeakKeyDictionary()
         self.__nframes = nframes
         if kwargs.get('callback', None) is None:
-            cbinfo = _ffi.new("Py_PaCallbackInfo*", { 'call_count': 0, 'xruns': 0 } )
+            cbinfo = _ffi.new("Py_PaCallbackInfo*")
             userdata = {'duplexity': ['input', 'output', 'duplex'].index(kind) + 1,
-                        'last_callback': -1,
                         'abort_on_xrun': int(raise_on_xruns),
                         'nframes': nframes + padding if nframes else nframes,
                         'padding': padding,
                         'callbackInfo': cbinfo,
-                        'offset': offset,
-                        'frame_count': 0,
-                        'errorMsg': b'', }
+                        'offset': offset }
             if self.rxbuff is not None:
                 userdata['rxbuff'] = _ffi.cast('PaUtilRingBuffer*', self.rxbuff._ptr)
             if self.txbuff is not None:
@@ -386,10 +383,9 @@ class _BufferedStreamBase(_sd._StreamBase):
         # finished.  We can use them to abort writing of the
         # ringbuffer.
         self.__statecond = _threading.Condition()
-        self.__streamlock = _threading.Lock()
+        self.__streamlock = _threading.RLock()
         self.__state = 0
         self.__aborting = False
-        self.__closed = False
 
         # To simplify things, we only care about the first exception
         # raised
@@ -423,11 +419,12 @@ class _BufferedStreamBase(_sd._StreamBase):
             # any xrun exceptions
             msg = _ffi.string(self._cstream.errorMsg).decode('utf-8')
             if len(msg):
-                exctype = getattr(_sys.modules[__name__], msg.split(':', 1)[0])
-                if exctype is XRunError:
+                exctype, excmsg = msg.split(':', 1)
+                exctype = getattr(_sys.modules[__name__], exctype)
+                if exctype is XRunError and not len(excmsg):
                     self._set_exception(XRunError(str(self.status)))
                 else:
-                    self._set_exception(exctype)
+                    self._set_exception(exctype(excmsg))
                 
             with self.__statecond:
                 # It's possible that the callback aborted itself so check
@@ -483,8 +480,10 @@ class _BufferedStreamBase(_sd._StreamBase):
         Raise the last deferred exception if one exists. If the caller's
         thread is not the stream owner this function does nothing.
         """
-        if _threading.current_thread() is not self._owner_thread:
+        currthread = _threading.current_thread()
+        if currthread is self._rxthread or currthread is self._txthread:
             return
+
         try:
             exc = self.__exceptions.get(block=False)
         except _queue.Empty:
@@ -522,16 +521,6 @@ class _BufferedStreamBase(_sd._StreamBase):
                 self._reraise_exceptions()
             return self.__state > 0
 
-    # Make 'active' thread safe by checking if close has been called on the
-    # stream yet
-    @property
-    def active(self):
-        """\
-        Check whether stream is active with the additional condition
-        that if the stream has been closed this will always return False.
-        """
-        return not self.__closed and super(_BufferedStreamBase, self).active
-
     @property
     def aborted(self):
         """\
@@ -560,6 +549,10 @@ class _BufferedStreamBase(_sd._StreamBase):
     @property
     def callback_info(self):
         return self._cstream.callbackInfo
+
+    @property
+    def xruns(self):
+        return self._cstream.callbackInfo.xruns
 
     @property
     def frame_count(self):
@@ -622,11 +615,15 @@ class _BufferedStreamBase(_sd._StreamBase):
         # Reset stream state
         with self.__statecond:
             self.__state = 0
-        self.__aborting = False
-        self.__closed = False
+        with self.__streamlock:
+            self.__aborting = False
         self._cstream.last_callback = -1
         self._cstream.callbackInfo.call_count = 0
         self._cstream.callbackInfo.xruns = 0
+        self._cstream.callbackInfo.inputUnderflows = 0
+        self._cstream.callbackInfo.inputOverflows = 0
+        self._cstream.callbackInfo.outputUnderflows = 0
+        self._cstream.callbackInfo.outputOverflows = 0
         self._cstream.status = 0
         self._cstream.frame_count = 0
         self._cstream.errorMsg = b''
@@ -648,15 +645,17 @@ class _BufferedStreamBase(_sd._StreamBase):
             self._txthread.start()
             while self.txbuff.write_available and self._txthread.is_alive():
                 _time.sleep(0.05)
+            self._reraise_exceptions()
         super(_BufferedStreamBase, self).start()
         if self._rxthread is not None:
             self._rxthread.start()
+            self._reraise_exceptions()
 
     def stop(self):
         with self.__streamlock:
             super(_BufferedStreamBase, self).stop()
         self.__stopiothreads()
-        self._reraise_exceptions()        
+        self._reraise_exceptions()
 
     def abort(self):
         with self.__streamlock:
@@ -666,10 +665,14 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._reraise_exceptions()
 
     def close(self):
+        # we take special care here to abort the stream first so that it
+        # is still valid for the lifetime of the read/write threads
         with self.__streamlock:
-            self.__closed = True
-            super(_BufferedStreamBase, self).close()
+            self.__aborting = True
+            super(_BufferedStreamBase, self).abort()
         self.__stopiothreads()
+        with self.__streamlock:
+            super(_BufferedStreamBase, self).close()
         self._reraise_exceptions()
 
     def __repr__(self):
@@ -784,14 +787,6 @@ class _SoundFileStreamBase(_BufferedStreamBase):
         Output file to capture data from audio device. If a SoundFile is not
         passed, the output file parameters will be determined from the output
         audio stream.
-    fileblocksize : int
-        (Advanced) An alternative to explicitly setting a audio buffer
-        blocksize which can limit performance in some cases. This
-        controls how many frames are read from the audio file into the
-        buffer at a time. Ideally, this should be greater than or equal
-        to the average Portaudio buffer size in order not to cause
-        underflow/overflow. Setting this parameter does not effect the
-        Portaudio buffer size.
 
     Attributes
     ------------
@@ -802,15 +797,11 @@ class _SoundFileStreamBase(_BufferedStreamBase):
 
     Other Parameters
     ----------------------
-    reader, writer, kind, fileblocksize, blocksize, **kwargs
+    reader, writer, kind, blocksize, **kwargs
         Additional parameters to pass to _BufferedStreamBase.
     """
     def __init__(self, kind, inpf=None, outf=None, reader=None,
-                 writer=None, sfkwargs={}, fileblocksize=None,
-                 blocksize=None, **kwargs):
-        if not (fileblocksize or blocksize):
-            raise ValueError("One or both of fileblocksize and blocksize must be non-zero.")
-
+                 writer=None, sfkwargs={}, blocksize=None, **kwargs):
         # At this point we don't care what 'kind' the stream is, only whether
         # the input/output is None which determines whether reader/writer
         # functions should be registered
@@ -868,8 +859,6 @@ class _SoundFileStreamBase(_BufferedStreamBase):
         else:
             self.out_fh = self._outf
 
-        self.fileblocksize = fileblocksize or self.blocksize
-
     # Default handler for writing input from a ThreadedStream to a SoundFile object
     @staticmethod
     def _soundfilewriter(stream, rxbuff):
@@ -880,12 +869,11 @@ class _SoundFileStreamBase(_BufferedStreamBase):
             framesize = stream.framesize
             dtype = stream.dtype    
 
-        dt = len(rxbuff) / stream.samplerate / 2
-        buff = memoryview(bytearray(stream.fileblocksize*framesize))
+        dt = len(rxbuff) / stream.samplerate / 8
         while not stream.aborted:
             # for thread safety, check the stream is active *before* reading
             active = stream.active 
-            nframes = rxbuff.read(buff)
+            nframes = rxbuff.read_available
             if nframes == 0:
                 # we've read everything and the stream is done; seeya!
                 if not active: break
@@ -893,10 +881,15 @@ class _SoundFileStreamBase(_BufferedStreamBase):
                 stream._rmisses += 1
                 stream.wait(dt)
                 continue
-            stream.out_fh.buffer_write(buff[:nframes*framesize], dtype=dtype)
 
-    # Default handler for reading input from a SoundFile object and writing it to a
-    # ThreadedStream
+            nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(nframes)
+            stream.out_fh.buffer_write(buffregn1, dtype=dtype)
+            if len(buffregn2):
+                stream.out_fh.buffer_write(buffregn2, dtype=dtype)
+            rxbuff.advance_read_index(nframes)
+
+    # Default handler for reading input from a SoundFile object and
+    # writing it to a BufferedStream
     @staticmethod
     def _soundfilereader(stream, txbuff):
         try:               
@@ -906,20 +899,47 @@ class _SoundFileStreamBase(_BufferedStreamBase):
             framesize = stream.framesize
             dtype = stream.dtype    
 
-        dt = len(txbuff) / stream.samplerate / 2
-        buff = memoryview(bytearray(stream.fileblocksize*framesize))
+        dt = len(txbuff) / stream.samplerate / 8
         while not stream.finished:
-            nframes = min(txbuff.write_available, stream.fileblocksize)
+            nframes = txbuff.write_available
             if nframes == 0:
                 stream._wmisses += 1
-                # wait for space to free up on the buffer
                 stream.wait(dt)
                 continue
 
-            readframes = stream.inp_fh.buffer_read_into(buff[:nframes*framesize], dtype=dtype)
-            txbuff.write(buff, readframes)
+            nframes, buffregn1, buffregn2 = txbuff.get_write_buffers(nframes)
+            readframes = stream.inp_fh.buffer_read_into(buffregn1, dtype=dtype)
+            if len(buffregn2):
+                readframes += stream.inp_fh.buffer_read_into(buffregn2, dtype=dtype)
+            txbuff.advance_write_index(readframes)
+
             if readframes < nframes:
                 break # we've reached end of file; all done!
+
+    @staticmethod
+    def _genreader(stream, txbuff):
+        try:               
+            framesize = stream.framesize[0]
+            dtype = stream.dtype[0]
+        except TypeError: 
+            framesize = stream.framesize
+            dtype = stream.dtype    
+
+        dt = len(rxbuff) / stream.samplerate / 2
+        iterdone = False
+        while not (stream.finished or iterdone):
+            try:
+                blk = next(audiogenerator)
+            except StopIteration:
+                iterdone = True
+            nframes = len(blk)
+
+            while txbuff.write_available < nframes:
+                stream._wmisses += 1
+                # wait for space to free up on the buffer
+                stream.wait(dt)
+
+            txbuff.write(buff, nframes)
 
     def close(self):
         try:
@@ -950,10 +970,9 @@ class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
     **kwargs
         Additional parameters to pass to SoundFileStreamBase.
     """
-    def __init__(self, outf, sfkwargs={}, fileblocksize=None, **kwargs):
+    def __init__(self, outf, sfkwargs={}, **kwargs):
         super(SoundFileInputStream, self).__init__('input', outf=outf,
                                                    sfkwargs=sfkwargs,
-                                                   fileblocksize=fileblocksize,
                                                    **kwargs)
 
 class SoundFileOutputStream(_SoundFileStreamBase):
@@ -966,10 +985,9 @@ class SoundFileOutputStream(_SoundFileStreamBase):
         Input file to stream to audio device. The input file will determine the
         samplerate and number of channels for the audio stream.
     """
-    def __init__(self, inpf, buffersize=_PA_BUFFERSIZE, fileblocksize=None, **kwargs):
+    def __init__(self, inpf, buffersize=_PA_BUFFERSIZE, **kwargs):
         super(SoundFileOutputStream, self).__init__('output', inpf=inpf,
                                                     buffersize=buffersize,
-                                                    fileblocksize=fileblocksize,
                                                     **kwargs)
 
 class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
@@ -980,7 +998,7 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
     stream's owner thread.
     """
     def __init__(self, inpf=None, outf=None, buffersize=_PA_BUFFERSIZE,
-                 sfkwargs={}, fileblocksize=None, **kwargs):
+                 sfkwargs={}, **kwargs):
         # If you're not using soundfiles for the input or the output, then you
         # should probably be using the Buffered or ThreadedStream class
         if inpf is None and outf is None:
@@ -988,7 +1006,6 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
 
         _SoundFileStreamBase.__init__(self, 'duplex', inpf=inpf,
                                       outf=outf, buffersize=buffersize,
-                                      fileblocksize=fileblocksize,
                                       sfkwargs=sfkwargs, **kwargs)
 
 def blocks(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False,
@@ -1120,22 +1137,15 @@ Drop a number of frames from the start of a recording.''')
                         help='''\
 Limit playback/capture to this many frames.''')
 
-    parser.add_argument("-B", "--file-blocksize", type=int,
-                         help='''\
-Only used for special cases where you want to set the file block size
-differently than the portaudio buffer size. You most likely don't need to use
-this option. (In units of frames).''')
-
     devopts = parser.add_argument_group("I/O device stream options")
 
     devopts.add_argument("-d", "--device", type=devtype,
                          help='''\
 Audio device name expression or index number. Defaults to the PortAudio default device.''')
 
-    devopts.add_argument("-b", "--blocksize", type=int,
+    devopts.add_argument("-b", "--blocksize", type=int, default=1024,
                          help='''\
-PortAudio buffer size in units of frames. Defaults to 1024 if neither
-this or --file-blocksize are specified.''')
+PortAudio buffer size in units of frames. Defaults to 1024.''')
 
     devopts.add_argument("-f", "--format", dest='dtype',
                          choices=_sd._sampleformats.keys(),
@@ -1171,10 +1181,6 @@ def _main(argv=None):
     parser = _get_parser()
     args = parser.parse_args(argv)
 
-    # set a default blocksize
-    if args.blocksize is None and args.file_blocksize is None:
-        args.blocksize = 512
-
     sfkwargs=dict()
     stream = _SoundFileStreamFactory(args.input, args.output, buffersize=args.qsize,
                                      nframes=args.nframes,
@@ -1188,12 +1194,11 @@ def _main(argv=None):
                                      device=args.device,
                                      channels=args.channels,
                                      dtype=args.dtype,
-                                     fileblocksize=args.file_blocksize,
                                      samplerate=args.samplerate,
                                      blocksize=args.blocksize)
 
     statline = '''\
-\r{:8.3f}s {:10d} frames processed, {:>8s} frames free, {:>8s} frames queued\r'''
+\r{:8.3f}s {:10d} frames processed, {:>8s} frames free, {:>8s} frames queued ({:d} xruns)\r'''
     print("<-", stream.inp_fh if stream.inp_fh is not None else 'null')
     print("--", stream)
     print("->", stream.out_fh if stream.out_fh is not None else 'null')
@@ -1213,7 +1218,8 @@ def _main(argv=None):
                     _time.sleep(0.1)
                     line = statline.format(_time.time()-t1, stream.frame_count,
                                            nullinp or str(stream.txbuff.write_available),
-                                           nullout or str(stream.rxbuff.read_available))
+                                           nullout or str(stream.rxbuff.read_available),
+                                           stream.xruns)
                     _sys.stdout.write(line); _sys.stdout.flush()
         finally:
             print()
@@ -1226,9 +1232,9 @@ def _main(argv=None):
     print("Callback info:")
     print("\tFrames processed: %d ( %7.3fs )" % (stream.frame_count, stream.frame_count/float(stream.samplerate)))
     print("\tcallback serviced %d times" % cbinfo.call_count)
-    print("\txruns: %d" % cbinfo.xruns)
+    print("\txruns (under/over): input {0.inputUnderflows}/{0.inputOverflows}, output {0.outputUnderflows}/{0.outputOverflows}".format(cbinfo))
     print("\tDelta range (ms): [ {:7.3f}, {:7.3f}]".format(1e3*(cbinfo.min_dt), 1e3*(cbinfo.max_dt)))
-    print("\tNominal (ms): {:7.3f}".format(1e3*stream.fileblocksize/stream.samplerate))
+    print("\tNominal (ms): {:7.3f}".format(1e3*stream.blocksize/stream.samplerate))
     print("\tMin frames requested : %d" % cbinfo.min_frame_count)
     print("\tWrite/read misses: %d/%d" % (stream._wmisses, stream._rmisses))
 
