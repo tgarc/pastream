@@ -6,9 +6,8 @@ typedef enum duplexity_t {
 
 typedef struct Py_PaCallbackInfo {
     PaTime max_dt, min_dt, lastTime;
+    long min_frame_count;
     unsigned long call_count;
-    unsigned long min_frame_count;
-    unsigned long xruns;
     unsigned long inputOverflows, inputUnderflows;
     unsigned long outputOverflows, outputUnderflows;
 } Py_PaCallbackInfo;
@@ -17,6 +16,8 @@ typedef struct Py_PaBufferedStream {
     PaStreamCallbackFlags status;
     int last_callback;
     int abort_on_xrun;
+    int _nframesIsUnset;
+    unsigned long xruns;
     unsigned long frame_count;
     unsigned long nframes;        // Number of frames to play/record (0 means unlimited)
     unsigned long padding;        // Number of zero frames to pad the input with

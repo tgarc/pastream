@@ -287,3 +287,11 @@ def test_threaded_read_deferred_exception_handling(devargs):
             stream.start()
             assert stream.wait(0.5), "Timed out!"
     assert str(excinfo.value) == rxmsg
+
+def test_nframes_raises_underflow(devargs):
+    stream = ps.BufferedStream(buffersize=8192, nframes=9000, **devargs)
+    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
+    with pytest.raises(ps.TransmitBufferEmpty) as excinfo:
+        with stream:
+            stream.start()
+            stream.wait()

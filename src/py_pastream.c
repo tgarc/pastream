@@ -12,10 +12,9 @@ int callback(
     void *user_data) 
 {
     unsigned long frames_left = frame_count, offset = 0;
-    ring_buffer_size_t oframes;
+    ring_buffer_size_t oframes, iframes;
     Py_PaBufferedStream *stream = (Py_PaBufferedStream *) user_data;
     PaTime timedelta = timeInfo->currentTime - stream->callbackInfo->lastTime;
-    int returnCode = paContinue;
 
     if (stream->callbackInfo->call_count == 0) {
         stream->callbackInfo->min_dt = timeInfo->currentTime;
@@ -34,7 +33,6 @@ int callback(
     }
 
     stream->callbackInfo->call_count++;
-
     stream->status |= status;
     switch (status) {
         case paInputUnderflow :
@@ -51,18 +49,17 @@ int callback(
             break;
     }
     if (status&0xF) {
-        stream->callbackInfo->xruns++;
+        stream->xruns++;
         if (stream->abort_on_xrun) {
-          stream->last_callback = paAbort;
           strcpy(stream->errorMsg, "XRunError");
-          return paAbort;
+          return stream->last_callback = paAbort;
         }
     }
 
     // (1) We've surpassed nframes: this is our last callback
     if (stream->nframes && stream->frame_count + frames_left >= stream->nframes) {
         frames_left = stream->nframes - stream->frame_count;
-        returnCode = paComplete;
+        stream->last_callback = paComplete;
     }
 
     if (stream->duplexity & O_MODE) {
@@ -79,12 +76,18 @@ int callback(
             if ( !stream->nframes ) {
                 // Figure out how much additional padding to insert and set nframes
                 // equal to it
+                stream->_nframesIsUnset = 1;
                 stream->nframes = stream->frame_count + oframes + stream->padding;
                 // (2) We don't want to do an unncessary callback; end here
                 if (stream->frame_count + frames_left >= stream->nframes) {
                     frames_left = stream->nframes - stream->frame_count;
-                    returnCode = paComplete;
+                    stream->last_callback = paComplete;
                 }
+            }
+            else if ( !stream->_nframesIsUnset ) {
+                strcpy(stream->errorMsg, "TransmitBufferEmpty");
+                stream->frame_count += oframes;
+                return stream->last_callback = paAbort;
             }
         }
     }
@@ -95,15 +98,16 @@ int callback(
             frames_left -= offset;
             in_data = (unsigned char *) in_data + offset*stream->rxbuff->elementSizeBytes;
         }
-        if (PaUtil_WriteRingBuffer(stream->rxbuff, (void *) in_data, frames_left) < frames_left) {
+
+        iframes = PaUtil_WriteRingBuffer(stream->rxbuff, (void *) in_data, frames_left);
+        if (iframes < frames_left) {
             strcpy(stream->errorMsg, "ReceiveBufferFull");
-            stream->last_callback = paAbort;
-            return paAbort;
+            stream->frame_count += iframes;
+            return stream->last_callback = paAbort;
         }
     }
 
-    stream->last_callback = returnCode;
     stream->callbackInfo->lastTime = timeInfo->currentTime;
     stream->frame_count += frame_count;
-    return returnCode;
+    return stream->last_callback;
 }
