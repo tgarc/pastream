@@ -42,6 +42,11 @@ _FINISHED = 1
 _ABORTED = 2
 _STOPPED = 4
 
+paInputOverflow = _lib.paInputOverflow
+paInputUnderflow = _lib.paInputUnderflow
+paOutputOverflow = _lib.paOutputOverflow
+paOutputUnderflow = _lib.paOutputUnderflow
+
 class PaStreamException(Exception):
     pass
  
@@ -309,9 +314,12 @@ class _BufferedStreamBase(_sd._StreamBase):
     reader, writer : function
         Buffer reader and writer functions to be run in a separate
         thread.
-    raise_on_xruns : bool
-        If True, the stream will be aborted and XRunError will be raised
-        on the first occurrence of any underflow/overflow conditions.
+    raise_on_xruns : bool or int
+        Abort the stream on an xrun condition and raise an XRunError
+        exception. If True the stream will be aborted on any xrun
+        condition. Alternatively, pass a combination of
+        pa{Input,Output}{Overflow,Underflow} to only raise on certain
+        xrun conditions.
     blocksize : int or None
         Portaudio buffer size. If None or 0, the Portaudio backend will
         automatically determine a size.
@@ -366,7 +374,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         if kwargs.get('callback', None) is None:
             cbinfo = _ffi.new("Py_PaCallbackInfo*")
             userdata = {'duplexity': ['input', 'output', 'duplex'].index(kind) + 1,
-                        'abort_on_xrun': int(raise_on_xruns),
+                        'abort_on_xrun': 0xF if raise_on_xruns is True else int(raise_on_xruns),
                         'padding': padding,
                         'callbackInfo': cbinfo,
                         'offset': offset }
@@ -450,11 +458,12 @@ class _BufferedStreamBase(_sd._StreamBase):
                                                   dtype=dtype,
                                                   finished_callback=finished_callback,
                                                   **kwargs)
+
         self._rmisses = self._wmisses = 0
-        if isinstance(self.device, int):
-            self._device_name = _sd.query_devices(self._device)['name']
-        else:
+        if kind == 'duplex':
             self._device_name = tuple(_sd.query_devices(dev)['name'] for dev in self._device)
+        else:
+            self._device_name = _sd.query_devices(self._device)['name']
 
     def __stopiothreads(self):
         currthread = _threading.current_thread()
@@ -497,7 +506,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         # To simplify things, we only care about the first exception
         # raised
         # TODO: handle multiple deferred exceptions
-        self.__exceptions.clear()
+        self.__exceptions.queue.clear()
 
         if isinstance(exc, tuple):
             exctype, excval, exctb = exc
@@ -558,7 +567,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         return _sd.CallbackFlags(self._cstream.status)
 
     @property
-    def callback_info(self):
+    def _callback_info(self):
         return self._cstream.callbackInfo
 
     @property
@@ -621,16 +630,17 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._cstream.frame_count = 0
         self._cstream.errorMsg = b''
         self._cstream.xruns = 0
+        self._cstream.inputUnderflows = 0
+        self._cstream.inputOverflows = 0
+        self._cstream.outputUnderflows = 0
+        self._cstream.outputOverflows = 0
         self._cstream._nframesIsUnset = 0
 
+        for i in range(_lib.MEASURE_LEN):
+            self._cstream.callbackInfo.period[i] = 0
         self._cstream.callbackInfo.call_count = 0
         self._cstream.callbackInfo.min_dt = -1
-        self._cstream.callbackInfo.min_frame_count = -1
         self._cstream.callbackInfo.max_dt = -1
-        self._cstream.callbackInfo.inputUnderflows = 0
-        self._cstream.callbackInfo.inputOverflows = 0
-        self._cstream.callbackInfo.outputUnderflows = 0
-        self._cstream.callbackInfo.outputOverflows = 0
         self.nframes = self.__nframes
 
     def _prepare(self):
@@ -934,8 +944,7 @@ class _SoundFileStreamBase(_BufferedStreamBase):
         dt = len(txbuff) / stream.samplerate / 8
         while not stream.finished:
             nframes = txbuff.write_available
-            if nframes == 0:
-                stream._wmisses += 1
+            if not nframes:
                 stream.wait(dt)
                 continue
 
@@ -947,31 +956,6 @@ class _SoundFileStreamBase(_BufferedStreamBase):
 
             if readframes < nframes:
                 break # we've reached end of file; all done!
-
-    @staticmethod
-    def _genreader(stream, txbuff):
-        try:               
-            framesize = stream.framesize[0]
-            dtype = stream.dtype[0]
-        except TypeError: 
-            framesize = stream.framesize
-            dtype = stream.dtype    
-
-        dt = len(rxbuff) / stream.samplerate / 2
-        iterdone = False
-        while not (stream.finished or iterdone):
-            try:
-                blk = next(audiogenerator)
-            except StopIteration:
-                iterdone = True
-            nframes = len(blk)
-
-            while txbuff.write_available < nframes:
-                stream._wmisses += 1
-                # wait for space to free up on the buffer
-                stream.wait(dt)
-
-            txbuff.write(buff, nframes)
 
     def close(self):
         try:
@@ -1259,15 +1243,21 @@ def _main(argv=None):
     except KeyboardInterrupt:
         pass
 
-    cbinfo = stream.callback_info
     print("Callback info:")
     print("\tFrames processed: %d ( %7.3fs )" % (stream.frame_count, stream.frame_count/float(stream.samplerate)))
-    print("\tcallback serviced %d times" % cbinfo.call_count)
-    print("\txruns (under/over): input {0.inputUnderflows}/{0.inputOverflows}, output {0.outputUnderflows}/{0.outputOverflows}".format(cbinfo))
-    print("\tDelta range (ms): [ {:7.3f}, {:7.3f}]".format(1e3*(cbinfo.min_dt), 1e3*(cbinfo.max_dt)))
-    print("\tNominal (ms): %s" % ('%7.3f' % 1e3*stream.blocksize/stream.samplerate if stream.blocksize else 'N/A'))
-    print("\tMin frames requested : %d" % cbinfo.min_frame_count)
-    print("\tWrite/read misses: %d/%d" % (stream._wmisses, stream._rmisses))
+    print("\txruns (under/over): input {0.inputUnderflows}/{0.inputOverflows}, output {0.outputUnderflows}/{0.outputOverflows}".format(stream._cstream))
+
+    if _lib.PYPA_DEBUG:
+        cbinfo = stream._callback_info
+        print("\tCallback serviced %d times" % cbinfo.call_count)
+        print("\tDelta range (ms): [ {:7.3f}, {:7.3f}]".format(1e3*(cbinfo.min_dt), 1e3*(cbinfo.max_dt)))
+        print("\tNominal (ms): %s" %
+              ('%7.3f' % (1e3*stream.blocksize/stream.samplerate) if stream.blocksize else 'N/A'))
+        print("\tWrite/read misses: %d/%d" % (stream._wmisses, stream._rmisses))
+
+        arr = _ffi.unpack(cbinfo.period, _lib.MEASURE_LEN)
+        print(arr)
+        print(min(arr), max(arr), sorted(arr)[len(arr)//2])
 
     return 0
 
