@@ -69,10 +69,9 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
 
     mframes = 0
     blocksize = 2048
-    outblocks = out_fh.blocks(blocksize, dtype=dtype, always_2d=True)
     unsigned_dtype = 'u' + dtype.lstrip('u')
     inpblk = np.zeros((blocksize, inp_fh.channels), dtype=dtype)
-    for outblk in outblocks:
+    for outblk in out_fh.blocks(blocksize, dtype=dtype, always_2d=True):
         readframes = inp_fh.buffer_read_into(inpblk[:len(outblk)], dtype=dtype)
 
         inp = inpblk[:readframes].view(unsigned_dtype)
@@ -96,9 +95,11 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
         found_delay = False
         unsigned_dtype = 'u%d'%stream.samplesize[1]
         nframes = mframes = 0
-        chunksize = 1024
-        inframes = np.zeros((chunksize, stream.channels[1]), dtype=stream.dtype[1])
-        for outframes in stream.chunks(chunksize, always_2d=True):
+        inframes = np.zeros((stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
+        t = 0
+        for outframes in stream.chunks(always_2d=True):
+            # print(1e3*(time.time() - t), stream.rxbuff.read_available)
+            t = time.time()
             if not found_delay:
                 matches = outframes[:, 0].view(unsigned_dtype) == preamble
                 if np.any(matches): 

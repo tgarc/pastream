@@ -23,7 +23,6 @@ import time as _time
 import sys as _sys
 import sounddevice as _sd
 import soundfile as _sf
-import weakref as _weakref
 from _py_pastream import ffi as _ffi, lib as _lib
 try:
     import numpy as _np
@@ -317,7 +316,7 @@ class _BufferedStreamBase(_sd._StreamBase):
     raise_on_xruns : bool or int
         Abort the stream on an xrun condition and raise an XRunError
         exception. If True the stream will be aborted on any xrun
-        condition. Alternatively, pass a combination of
+        condition. Alternatively, logically or a combination of
         pa{Input,Output}{Overflow,Underflow} to only raise on certain
         xrun conditions.
     blocksize : int or None
@@ -369,14 +368,11 @@ class _BufferedStreamBase(_sd._StreamBase):
 
         # Set up the C portaudio callback
         self._cstream = _ffi.NULL
-        self.__weakref = _weakref.WeakKeyDictionary()
         self.__nframes = nframes
         if kwargs.get('callback', None) is None:
-            cbinfo = _ffi.new("Py_PaCallbackInfo*")
             userdata = {'duplexity': ['input', 'output', 'duplex'].index(kind) + 1,
                         'abort_on_xrun': 0xF if raise_on_xruns is True else int(raise_on_xruns),
                         'padding': padding,
-                        'callbackInfo': cbinfo,
                         'offset': offset }
             if self.rxbuff is not None:
                 userdata['rxbuff'] = _ffi.cast('PaUtilRingBuffer*', self.rxbuff._ptr)
@@ -384,7 +380,6 @@ class _BufferedStreamBase(_sd._StreamBase):
                 userdata['txbuff'] = _ffi.cast('PaUtilRingBuffer*', self.txbuff._ptr)
                 
             self._cstream = _ffi.new("Py_PaBufferedStream*", userdata)
-            self.__weakref[self._cstream] = cbinfo
             kwargs['userdata'] = self._cstream
             kwargs['callback'] = _ffi.addressof(_lib, 'callback')
             kwargs['wrap_callback'] = None
@@ -415,7 +410,7 @@ class _BufferedStreamBase(_sd._StreamBase):
             self._rxthread_args = None
 
         # TODO: add support for C finished_callback function pointer
-        user_callback = kwargs.get('finished_callback', lambda : None)
+        user_callback = kwargs.pop('finished_callback', lambda : None)
         def finished_callback():
             # Check for any errors that might've occurred in the
             # callback
@@ -629,6 +624,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._cstream.last_callback = _sd._lib.paContinue
         self._cstream.status = 0
         self._cstream.frame_count = 0
+        self._cstream.call_count = 0
         self._cstream.errorMsg = b''
         self._cstream.xruns = 0
         self._cstream.inputUnderflows = 0
@@ -637,12 +633,6 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._cstream.outputOverflows = 0
         self._cstream._nframesIsUnset = 0
         self.nframes = self.__nframes
-
-        for i in range(_lib.MEASURE_LEN):
-            self._cstream.callbackInfo.period[i] = 0
-        self._cstream.callbackInfo.call_count = 0
-        self._cstream.callbackInfo.min_dt = -1
-        self._cstream.callbackInfo.max_dt = -1
 
     def _prepare(self):
         assert not self.active, "Stream has already been started!"
@@ -727,23 +717,21 @@ class _InputStreamMixin(object):
              
     # TODO: add buffer 'type' as an argument
     # TODO: add fill_value option
-    def chunks(self, chunksize=0, overlap=0, always_2d=False, copy=False):
+    def chunks(self, chunksize=None, overlap=0, always_2d=False):
         """
         Similar to SoundFile.blocks. Returns an iterator over buffered audio
         chunks read from a Portaudio stream.
 
         Parameters
         ----------
-        chunksize : int
+        chunksize : int or None, optional
             Size of chunks. This is aside from the stream `blocksize`
             and is required if `blocksize` is zero or unset.
-        overlap : int
+        overlap : int, optional
             Number of frames to overlap across blocks.
-        always_2d : bool
+        always_2d : bool, optional
             Always returns blocks 2 dimensional arrays. Only valid if you have
             numpy installed.
-        copy : bool
-            Whether to return copies of blocks. By default a view is returned.
 
         Yields
         ------
@@ -772,21 +760,17 @@ class _InputStreamMixin(object):
         if channels > 1:
             always_2d = True
 
-        copy |= overlap
         if _np is None:
             tempbuff = memoryview(bytearray(chunksize*framesize))
-            copier = lambda x: memoryview(bytearray(buff))
         else:
             tempbuff = _np.zeros((chunksize, channels) if always_2d else chunksize*channels, dtype=dtype)
-            copier = _np.copy
 
         incframes = chunksize - overlap
         rxbuff = self.rxbuff
 
-        runtime = 0
         done = False
         self.start()
-        sleeptime = (incframes - rxbuff.read_available)  / self.samplerate
+        sleeptime = (incframes - rxbuff.read_available) / self.samplerate
         if sleeptime > 0:
             _time.sleep(sleeptime)
         while not (self.aborted or done):
@@ -797,28 +781,32 @@ class _InputStreamMixin(object):
                 if not active:
                     done = True
                 else:
-                    self._rmisses += 1 if self._callback_info.call_count > 0 else 0
+                    self._rmisses += 1
                     _time.sleep(0.0005)
                     continue
 
-            runtime = _time.time()
+            starttime = _time.time()
             nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(nframes)
-            if len(buffregn2) or copy:
-                # FIXME: this only works for ndarrays atm
-                tempbuff[:len(buffregn1)//rxbuff.elementsize].data = buffregn1
-                tempbuff[:len(buffregn2)//rxbuff.elementsize].data = buffregn2
+            if len(buffregn2) or overlap:
+                # FIXME: this only covers the ndarray case
+                n1 = overlap + len(buffregn1)//rxbuff.elementsize
+                tempbuff[overlap:n1].data = buffregn1
+                if len(buffregn2):
+                    tempbuff[n1:n1 + len(buffregn2)//rxbuff.elementsize].data = buffregn2
                 rxbuff.advance_read_index(nframes)
-                yield copier(tempbuff[:overlap + nframes]) if copy else tempbuff[:overlap + nframes]
-            elif _np:
-                yield _np.frombuffer(buffregn1, dtype=dtype).reshape(nframes, channels) 
-                rxbuff.advance_read_index(nframes)
+                yield tempbuff[overlap:overlap + nframes]
+                if overlap:
+                    tempbuff[:overlap] = tempbuff[-overlap:]
             else:
-                yield buffregn1
+                if always_2d:
+                    yield _np.frombuffer(buffregn1, dtype=dtype).reshape(nframes, channels)
+                elif _np:
+                    yield _np.frombuffer(buffregn1, dtype=dtype)
+                else:
+                    yield buffregn1
                 rxbuff.advance_read_index(nframes)
-            if overlap:
-                tempbuff[:-incframes] = tempbuff[incframes:]
 
-            sleeptime = incframes / self.samplerate - (_time.time() - runtime)
+            sleeptime = (incframes - rxbuff.read_available) / self.samplerate - (_time.time() - starttime)
             if sleeptime > 0:
                 _time.sleep(sleeptime)
 
@@ -926,7 +914,8 @@ class _SoundFileStreamBase(_BufferedStreamBase):
         else:
             self.out_fh = self._outf
 
-    # Default handler for writing input from a Buffered to a SoundFile object
+    # Default handler for writing input from a BufferedStream to a
+    # SoundFile object
     @staticmethod
     def _soundfilewriter(stream, rxbuff):
         try:               
@@ -998,13 +987,13 @@ class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
     Parameters
     -----------
     outf : SoundFile compatible input
-        Output file to capture data from audio device. If a SoundFile is not
-        passed, the output file parameters will be determined from the output
-        audio stream.
+        Output file to write captured audio data. If a SoundFile is
+        not passed, the output file parameters will be determined from
+        the output audio stream.
     sfkwargs : dict
-        Arguments to pass when creating SoundFile when outf is not already a
-        SoundFile object. This allows overriding of any of the default
-        parameters.
+        Arguments to pass when creating SoundFile when outf is not
+        already a SoundFile object. This allows overriding of any of
+        the default stream derived parameters.
 
     Other Parameters
     -----------------
@@ -1049,7 +1038,7 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
                                       outf=outf, buffersize=buffersize,
                                       sfkwargs=sfkwargs, **kwargs)
 
-def chunks(inpf=None, chunksize=0, overlap=0, always_2d=False, copy=False,
+def chunks(inpf=None, chunksize=None, overlap=0, always_2d=False,
            writer=None, streamclass=None, **kwargs):
     """
     Read audio data in chunks from a Portaudio stream. Can be either half-duplex
@@ -1059,16 +1048,15 @@ def chunks(inpf=None, chunksize=0, overlap=0, always_2d=False, copy=False,
     ------------
     inpf : SoundFile compatible input or None, optional
         Optional input stimuli.
-    chunksize : int
-        Size of chunks. This is aside from the stream `blocksize` and is
-        required if `blocksize` is zero or unset.
+    chunksize : int or None, optional
+        Size of chunks. This is aside from the stream `blocksize` and
+        is required if `blocksize` is zero or unset. If zero or None,
+        chunksize=blocksize.
     overlap : int, optinal
         Number of frames to overlap across blocks.
     always_2d : bool, optional
-        Always returns blocks 2 dimensional arrays. Only valid if you have
-        numpy installed.
-    copy : bool, optional
-        Whether to return copies of blocks. By default a view is returned.
+        Always returns blocks as 2 dimensional arrays. Only valid if
+        you have numpy installed.
 
     Other Parameters
     -----------------
@@ -1095,7 +1083,7 @@ def chunks(inpf=None, chunksize=0, overlap=0, always_2d=False, copy=False,
         stream = streamclass(inpf, **kwargs)
 
     with stream:
-        for blk in stream.blocks(chunksize, overlap, always_2d, copy):
+        for blk in stream.chunks(chunksize, overlap, always_2d):
             yield blk 
 
 # Used just for the pastream app
@@ -1272,18 +1260,8 @@ def _main(argv=None):
     print("Callback info:")
     print("\tFrames processed: %d ( %7.3fs )" % (stream.frame_count, stream.frame_count/float(stream.samplerate)))
     print("\txruns (under/over): input {0.inputUnderflows}/{0.inputOverflows}, output {0.outputUnderflows}/{0.outputOverflows}".format(stream._cstream))
-
-    if _lib.PYPA_DEBUG:
-        cbinfo = stream._callback_info
-        print("\tCallback serviced %d times" % cbinfo.call_count)
-        print("\tDelta range (ms): [ {:7.3f}, {:7.3f}]".format(1e3*(cbinfo.min_dt), 1e3*(cbinfo.max_dt)))
-        print("\tNominal (ms): %s" %
-              ('%7.3f' % (1e3*stream.blocksize/stream.samplerate) if stream.blocksize else 'N/A'))
-        print("\tWrite/read misses: %d/%d" % (stream._wmisses, stream._rmisses))
-
-        arr = filter(bool, _ffi.unpack(cbinfo.period, _lib.MEASURE_LEN))
-        print(arr)
-        print(min(arr), max(arr), sorted(arr)[len(arr)//2])
+    print("\tCallback serviced %d times" % stream._cstream.call_count)
+    print("\tWrite/read misses: %d/%d" % (stream._wmisses, stream._rmisses))
 
     return 0
 

@@ -15,45 +15,21 @@ int callback(
     ring_buffer_size_t oframes, iframes;
     Py_PaBufferedStream *stream = (Py_PaBufferedStream *) user_data;
 
-#ifdef PYPA_DEBUG
-    PaTime timedelta = timeInfo->currentTime - stream->lastTime;
-
-    if ( stream->callbackInfo->call_count == 0 ) {
-        stream->callbackInfo->min_dt = timeInfo->currentTime;
-        stream->callbackInfo->max_dt = 0;
-    }
-    else {
-      if ( timedelta > stream->callbackInfo->max_dt )
-          stream->callbackInfo->max_dt = timedelta;
-      else if ( timedelta > 0 && timedelta < stream->callbackInfo->min_dt )
-          stream->callbackInfo->min_dt = timedelta;
-      if ( stream->callbackInfo->call_count > 0 )
-          stream->callbackInfo->period[(stream->callbackInfo->call_count-1) % MEASURE_LEN] = timeInfo->currentTime;
-    }
-    stream->callbackInfo->call_count++;
-#endif // PYPA_DEBUG
-
-    switch ( status ) {
-        case paInputUnderflow :
-            stream->inputUnderflows++;
-            break;
-        case paInputOverflow :
-            stream->inputOverflows++;
-            break;
-        case paOutputUnderflow :
-            stream->outputUnderflows++;
-            break;
-        case paOutputOverflow :
-            stream->outputOverflows++;
-            break;
-    }
-
-    stream->status |= status;
+    stream->call_count++;
     if ( status & 0xF ) {
+        stream->status |= status;
         stream->xruns++;
+        if ( status & paInputUnderflow )
+            stream->inputUnderflows++;
+        if ( status & paInputOverflow )
+            stream->inputOverflows++;
+        if ( status & paOutputUnderflow )
+            stream->outputUnderflows++;
+        if ( status & paOutputOverflow )
+            stream->outputOverflows++;
         if (status & stream->abort_on_xrun) {
-          strcpy(stream->errorMsg, "XRunError");
-          return stream->last_callback = paAbort;
+            strcpy(stream->errorMsg, "XRunError");
+            return stream->last_callback = paAbort;
         }
     }
 
