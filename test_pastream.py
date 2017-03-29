@@ -84,29 +84,21 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
           % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
 
-def assert_blocks_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
+def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
+    inpf2 = sf.SoundFile(inp_fh.name.name)
+
     inp_fh.seek(0)
     with ps.SoundFileStream(inp_fh, **devargs) as stream:
-        # 'tee' the transmit queue writer so that we can recall any
-        # input and match it to the output.
-        inpbuff = ps.RingBuffer(stream.txbuff.elementsize, 4*len(stream.txbuff))
-        writer = stream.txbuff.write
-        def teewrite(buff, size=-1):
-            nframes1 = writer(buff, size)
-            nframes2 = inpbuff.write(buff, nframes1)
-            assert nframes1 == nframes2, "Ran out of temporary buffer space. Use a larger buffersize"
-            return nframes1
-        stream.txbuff.write = teewrite
-
         delay = -1
         found_delay = False
         unsigned_dtype = 'u%d'%stream.samplesize[1]
         nframes = mframes = 0
-        inframes = np.zeros((stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
-        for outframes in stream.blocks(always_2d=True):
+        chunksize = 1024
+        inframes = np.zeros((chunksize, stream.channels[1]), dtype=stream.dtype[1])
+        for outframes in stream.chunks(chunksize, always_2d=True):
             if not found_delay:
                 matches = outframes[:, 0].view(unsigned_dtype) == preamble
                 if np.any(matches): 
@@ -117,16 +109,16 @@ def assert_blocks_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
                     delay = nframes
                     if compensate_delay: stream.padding = delay
             if found_delay:
-                readframes = inpbuff.read(inframes, len(outframes))
+                readframes = inpf2.buffer_read_into(inframes[:len(outframes)], dtype=stream.dtype[1])
+
                 inp = inframes[:readframes].view(unsigned_dtype)
                 out = outframes[:readframes].view(unsigned_dtype)
-
                 npt.assert_array_equal(inp, out, "Loopback data mismatch")
                 mframes += readframes
             nframes += len(outframes)
         assert delay != -1, "Preamble not found or was corrupted"
 
-    stats = mframes, nframes, delay, inpbuff.read_available, stream._rmisses
+    stats = mframes, nframes, delay, len(inpf2) - inpf2.tell(), stream._rmisses
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %d misses" 
           % stats)
     return stats
@@ -158,7 +150,7 @@ def gen_random(nseconds, samplerate, channels, elementsize):
 def random_soundfile_input(scope='module'):
     elementsize = _dtype2elementsize[DEVICE_KWARGS['dtype']]
 
-    rdmf = tempfile.TemporaryFile()
+    rdmf = tempfile.NamedTemporaryFile()
     rdm_fh = sf.SoundFile(rdmf, 'w+', 
                           DEVICE_KWARGS['samplerate'],
                           DEVICE_KWARGS['channels'], 
@@ -184,9 +176,9 @@ def random_soundfile_input(scope='module'):
 def devargs():
     return dict(DEVICE_KWARGS)
 
-def test_blocks_loopback(random_soundfile_input):
+def test_chunks_loopback(random_soundfile_input):
     inp_fh, preamble, dtype = random_soundfile_input
-    assert_blocks_equal(inp_fh, preamble, dtype=dtype)
+    assert_chunks_equal(inp_fh, preamble, dtype=dtype)
 
 def test_SoundFileStream_loopback(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
@@ -207,17 +199,17 @@ def test_pad_offset_nframes(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
     # If we compensate for the delay we should have no frames truncated
-    mframes, nframes, delay, ntrunc = assert_blocks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
+    mframes, nframes, delay, ntrunc = assert_chunks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
     assert ntrunc == 0
 
     # Using offset only should drop 'offset' frames from the recording
     offset = 8 # use a minimal offset so we don't drop the original input frames
-    mframes, nframes = assert_blocks_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
+    mframes, nframes = assert_chunks_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
     assert nframes == (len(inp_fh) - offset)
 
     # If we offset and pad the recording using a known fixed delay we should
     # have an *exact* match
-    mframes, nframes, delay = assert_blocks_equal(inp_fh, preamble, dtype=dtype, nframes=8192)[:3]
+    mframes, nframes, delay = assert_chunks_equal(inp_fh, preamble, dtype=dtype, nframes=8192)[:3]
     assert nframes == 8192
  
 def test_stream_replay(devargs):   

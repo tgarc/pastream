@@ -16,24 +16,24 @@ int callback(
     Py_PaBufferedStream *stream = (Py_PaBufferedStream *) user_data;
 
 #ifdef PYPA_DEBUG
-    PaTime timedelta = timeInfo->currentTime - stream->callbackInfo->lastTime;
+    PaTime timedelta = timeInfo->currentTime - stream->lastTime;
 
-    if (stream->callbackInfo->call_count == 0) {
+    if ( stream->callbackInfo->call_count == 0 ) {
         stream->callbackInfo->min_dt = timeInfo->currentTime;
         stream->callbackInfo->max_dt = 0;
     }
-    else if (timedelta > stream->callbackInfo->max_dt)
-        stream->callbackInfo->max_dt = timedelta;
-    if ( timedelta > 0 ) {
-        if (timedelta < stream->callbackInfo->min_dt)
-            stream->callbackInfo->min_dt = timedelta;
-        if ( stream->callbackInfo->call_count > 0 )
-            stream->callbackInfo->period[(stream->callbackInfo->call_count-1) % MEASURE_LEN] = timedelta;
-        stream->callbackInfo->call_count++;
+    else {
+      if ( timedelta > stream->callbackInfo->max_dt )
+          stream->callbackInfo->max_dt = timedelta;
+      else if ( timedelta > 0 && timedelta < stream->callbackInfo->min_dt )
+          stream->callbackInfo->min_dt = timedelta;
+      if ( stream->callbackInfo->call_count > 0 )
+          stream->callbackInfo->period[(stream->callbackInfo->call_count-1) % MEASURE_LEN] = timeInfo->currentTime;
     }
+    stream->callbackInfo->call_count++;
 #endif // PYPA_DEBUG
 
-    switch (status) {
+    switch ( status ) {
         case paInputUnderflow :
             stream->inputUnderflows++;
             break;
@@ -108,7 +108,7 @@ int callback(
         }
     }
 
-    stream->callbackInfo->lastTime = timeInfo->currentTime;
+    stream->lastTime = timeInfo->currentTime;
     stream->frame_count += frame_count;
     return stream->last_callback;
 }

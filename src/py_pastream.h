@@ -1,4 +1,4 @@
-#define MEASURE_LEN 64
+#define MEASURE_LEN 128
 #define MAX_MESSAGE_LEN 128
 #define PYPA_DEBUG 1
 
@@ -9,7 +9,7 @@ typedef enum duplexity_t {
 } duplexity_t;
 
 typedef struct Py_PaCallbackInfo {
-    PaTime max_dt, min_dt, lastTime;
+    PaTime max_dt, min_dt;
     PaTime period[MEASURE_LEN];
     unsigned long call_count;
 } Py_PaCallbackInfo;
@@ -17,6 +17,7 @@ typedef struct Py_PaCallbackInfo {
 typedef struct Py_PaBufferedStream {
     PaStreamCallbackFlags status;
     PaStreamCallbackFlags abort_on_xrun;
+    PaTime lastTime;
     int last_callback;
     int _nframesIsUnset;
     unsigned long xruns;

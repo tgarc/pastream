@@ -625,6 +625,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         self.close()
 
     def _reset_stream_info(self):
+        self._cstream.lastTime = 0
         self._cstream.last_callback = _sd._lib.paContinue
         self._cstream.status = 0
         self._cstream.frame_count = 0
@@ -635,13 +636,13 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._cstream.outputUnderflows = 0
         self._cstream.outputOverflows = 0
         self._cstream._nframesIsUnset = 0
+        self.nframes = self.__nframes
 
         for i in range(_lib.MEASURE_LEN):
             self._cstream.callbackInfo.period[i] = 0
         self._cstream.callbackInfo.call_count = 0
         self._cstream.callbackInfo.min_dt = -1
         self._cstream.callbackInfo.max_dt = -1
-        self.nframes = self.__nframes
 
     def _prepare(self):
         assert not self.active, "Stream has already been started!"
@@ -723,14 +724,19 @@ class _BufferedStreamBase(_sd._StreamBase):
                 ).format(self.__class__.__name__, device_name, channels, dtype, self)
 
 class _InputStreamMixin(object):
+             
     # TODO: add buffer 'type' as an argument
-    def blocks(self, overlap=0, always_2d=False, copy=False):
+    # TODO: add fill_value option
+    def chunks(self, chunksize=0, overlap=0, always_2d=False, copy=False):
         """
         Similar to SoundFile.blocks. Returns an iterator over buffered audio
         chunks read from a Portaudio stream.
 
         Parameters
         ----------
+        chunksize : int
+            Size of chunks. This is aside from the stream `blocksize`
+            and is required if `blocksize` is zero or unset.
         overlap : int
             Number of frames to overlap across blocks.
         always_2d : bool
@@ -742,15 +748,17 @@ class _InputStreamMixin(object):
         Yields
         ------
         array
-            ndarray or memoryview object with `blocksize` elements.
+            ndarray or memoryview object with `chunksize` or `blocksize` elements.
         """
-        blocksize = self.blocksize
-        if not blocksize:
-            raise ValueError("Requires a fixed known blocksize")
+        chunksize = chunksize or self.blocksize
+        if not chunksize:
+            raise ValueError("One of block or chunk size must be set")
+        if overlap and not chunksize:
+            raise ValueError("Using overlap requires a fixed known chunk or block size")
+        if overlap >= chunksize:
+            raise ValueError("Overlap must be less than chunk or block isze")
         if _np is None and always_2d:
             raise ValueError("always_2d is only supported with numpy")
-        if overlap >= blocksize:
-            raise ValueError("Overlap must be less than blocksize")
 
         try:
             channels = self.channels[0]
@@ -764,38 +772,55 @@ class _InputStreamMixin(object):
         if channels > 1:
             always_2d = True
 
+        copy |= overlap
         if _np is None:
-            outbuff = memoryview(bytearray(blocksize*framesize))
+            tempbuff = memoryview(bytearray(chunksize*framesize))
+            copier = lambda x: memoryview(bytearray(buff))
         else:
-            outbuff = _np.zeros((blocksize, channels) if always_2d else blocksize*channels, dtype=dtype)
+            tempbuff = _np.zeros((chunksize, channels) if always_2d else chunksize*channels, dtype=dtype)
+            copier = _np.copy
 
-        if copy:
-            if _np is None:
-                yielder = lambda buff: memoryview(bytearray(buff))
-            else:
-                yielder = _np.copy
-        else:
-            yielder = None
+        incframes = chunksize - overlap
+        rxbuff = self.rxbuff
 
-        incframes = blocksize - overlap
-        ringbuff = self.rxbuff
-        dt = int(1e3*(incframes / float(self.samplerate))) / 1e3
-
-        t1 = t2 = _time.time()
+        runtime = 0
+        done = False
         self.start()
-        while not self.aborted:
+        sleeptime = (incframes - rxbuff.read_available)  / self.samplerate
+        if sleeptime > 0:
+            _time.sleep(sleeptime)
+        while not (self.aborted or done):
             # for thread safety, check the stream is active *before* reading
             active = self.active 
-            nframes = ringbuff.read(outbuff[overlap:], incframes)
-            if nframes == 0:
-                if not active: break
-                self._rmisses += 1
-                _time.sleep(dt)
-                continue
+            nframes = min(rxbuff.read_available, incframes)
+            if nframes < incframes:
+                if not active:
+                    done = True
+                else:
+                    self._rmisses += 1 if self._callback_info.call_count > 0 else 0
+                    _time.sleep(0.0005)
+                    continue
 
-            yield yielder(outbuff[:overlap + nframes]) if copy else outbuff[:overlap + nframes]
+            runtime = _time.time()
+            nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(nframes)
+            if len(buffregn2) or copy:
+                # FIXME: this only works for ndarrays atm
+                tempbuff[:len(buffregn1)//rxbuff.elementsize].data = buffregn1
+                tempbuff[:len(buffregn2)//rxbuff.elementsize].data = buffregn2
+                rxbuff.advance_read_index(nframes)
+                yield copier(tempbuff[:overlap + nframes]) if copy else tempbuff[:overlap + nframes]
+            elif _np:
+                yield _np.frombuffer(buffregn1, dtype=dtype).reshape(nframes, channels) 
+                rxbuff.advance_read_index(nframes)
+            else:
+                yield buffregn1
+                rxbuff.advance_read_index(nframes)
+            if overlap:
+                tempbuff[:-incframes] = tempbuff[incframes:]
 
-            outbuff[:-incframes] = outbuff[incframes:]
+            sleeptime = incframes / self.samplerate - (_time.time() - runtime)
+            if sleeptime > 0:
+                _time.sleep(sleeptime)
 
 class BufferedInputStream(_InputStreamMixin, _BufferedStreamBase):
     def __init__(self, **kwargs):
@@ -1024,7 +1049,7 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
                                       outf=outf, buffersize=buffersize,
                                       sfkwargs=sfkwargs, **kwargs)
 
-def blocks(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False,
+def chunks(inpf=None, chunksize=0, overlap=0, always_2d=False, copy=False,
            writer=None, streamclass=None, **kwargs):
     """
     Read audio data in chunks from a Portaudio stream. Can be either half-duplex
@@ -1032,16 +1057,17 @@ def blocks(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False,
 
     Parameters
     ------------
-    inpf : SoundFile compatible input or None
+    inpf : SoundFile compatible input or None, optional
         Optional input stimuli.
-    blocksize : int
-        Portaudio stream buffer size. Must be non-zero.
-    overlap : int
+    chunksize : int
+        Size of chunks. This is aside from the stream `blocksize` and is
+        required if `blocksize` is zero or unset.
+    overlap : int, optinal
         Number of frames to overlap across blocks.
-    always_2d : bool
+    always_2d : bool, optional
         Always returns blocks 2 dimensional arrays. Only valid if you have
         numpy installed.
-    copy : bool
+    copy : bool, optional
         Whether to return copies of blocks. By default a view is returned.
 
     Other Parameters
@@ -1062,14 +1088,14 @@ def blocks(inpf=None, blocksize=512, overlap=0, always_2d=False, copy=False,
     if inpf is None:
         if streamclass is None:
             streamclass = BufferedInputStream
-        stream = streamclass(blocksize=blocksize, **kwargs)
+        stream = streamclass(**kwargs)
     else:
         if streamclass is None:
             streamclass = SoundFileStream
-        stream = streamclass(inpf, blocksize=blocksize, **kwargs)
+        stream = streamclass(inpf, **kwargs)
 
     with stream:
-        for blk in stream.blocks(overlap, always_2d, copy):
+        for blk in stream.blocks(chunksize, overlap, always_2d, copy):
             yield blk 
 
 # Used just for the pastream app
@@ -1255,7 +1281,7 @@ def _main(argv=None):
               ('%7.3f' % (1e3*stream.blocksize/stream.samplerate) if stream.blocksize else 'N/A'))
         print("\tWrite/read misses: %d/%d" % (stream._wmisses, stream._rmisses))
 
-        arr = _ffi.unpack(cbinfo.period, _lib.MEASURE_LEN)
+        arr = filter(bool, _ffi.unpack(cbinfo.period, _lib.MEASURE_LEN))
         print(arr)
         print(min(arr), max(arr), sorted(arr)[len(arr)//2])
 
