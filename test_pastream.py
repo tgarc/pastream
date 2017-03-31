@@ -46,7 +46,6 @@ tohex = lambda x: vhex(x.view('u%d'%x.dtype.itemsize))
 
 def find_soundfile_delay(xf, preamble, dtype):
     pos = xf.tell()
-
     off = -1
 
     blocksize = 2048
@@ -57,7 +56,6 @@ def find_soundfile_delay(xf, preamble, dtype):
         if nonzeros[0].size:
             off = i*blocksize + nonzeros[0][0]
             break
-
     xf.seek(pos)
 
     return off
@@ -148,10 +146,12 @@ def gen_random(nseconds, samplerate, channels, elementsize):
         yield pattern.astype(np.int32)
 
 @pytest.fixture
-def random_soundfile_input(scope='module'):
+def random_soundfile_input(tmpdir, scope='session'):
     elementsize = _dtype2elementsize[DEVICE_KWARGS['dtype']]
 
-    rdmf = tempfile.NamedTemporaryFile()
+    # we don't use an actual TemporaryFile because they don't support multiple
+    # file handles on windows
+    rdmf= open(tempfile.mktemp(dir=str(tmpdir)), 'w+b')
     rdm_fh = sf.SoundFile(rdmf, 'w+', 
                           DEVICE_KWARGS['samplerate'],
                           DEVICE_KWARGS['channels'], 
