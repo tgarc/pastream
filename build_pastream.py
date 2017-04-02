@@ -5,7 +5,11 @@ ffibuilder.cdef(r"""
 /* From portaudio.h: */
 
 typedef double PaTime;
-typedef struct PaStreamCallbackTimeInfo PaStreamCallbackTimeInfo;
+typedef struct PaStreamCallbackTimeInfo{
+    PaTime inputBufferAdcTime;
+    PaTime currentTime;
+    PaTime outputBufferDacTime;
+} PaStreamCallbackTimeInfo;
 typedef long ring_buffer_size_t;
 typedef unsigned long PaStreamCallbackFlags;
 #define paInputUnderflow  0x00000001

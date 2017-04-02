@@ -1,18 +1,14 @@
 #define MAX_MESSAGE_LEN 128
 
 
-typedef enum duplexity_t {
-    I_MODE = 1,
-    O_MODE,
-    IO_MODE
-} duplexity_t;
-
 typedef struct Py_PaBufferedStream {
     PaStreamCallbackFlags status;
     PaStreamCallbackFlags abort_on_xrun;
-    PaTime lastTime;
+    int keep_alive;
+    /* int paused; */
+    const PaStreamCallbackTimeInfo* lastTime;
     int last_callback;
-    int _nframesIsUnset;          // Internal only: must be initialized to 0
+    int __nframesIsUnset;         // Internal only
     unsigned long xruns;
     unsigned long inputOverflows, inputUnderflows;
     unsigned long outputOverflows, outputUnderflows;
@@ -21,11 +17,24 @@ typedef struct Py_PaBufferedStream {
     unsigned long nframes;        // Number of frames to play/record (0 means unlimited)
     unsigned long padding;        // Number of zero frames to pad the input with
     unsigned long offset;         // Number of frames to skip from beginning of recordings
-    duplexity_t duplexity;        
     PaUtilRingBuffer* rxbuff;     // Receive buffer
     PaUtilRingBuffer* txbuff;     // Transmit buffer
     char errorMsg[MAX_MESSAGE_LEN];           // Reserved for errors raised in the audio callback
 } Py_PaBufferedStream;
+
+// call once for initialization
+void init_stream(
+    Py_PaBufferedStream *stream, 
+    int keep_alive, 
+    PaStreamCallbackFlags abort_on_xrun, 
+    unsigned long nframes,
+    unsigned long padding,
+    unsigned long offset,
+    PaUtilRingBuffer *rxbuff,
+    PaUtilRingBuffer *txbuff);
+
+// Call before re-starting the stream
+void reset_stream(Py_PaBufferedStream *stream);
 
 int callback(const void* in_data, void* out_data, 
              unsigned long frame_count, 

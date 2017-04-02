@@ -81,7 +81,7 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
           % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
 
-def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
+def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
@@ -93,10 +93,12 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
         found_delay = False
         unsigned_dtype = 'u%d'%stream.samplesize[1]
         nframes = mframes = 0
-        inframes = np.zeros((stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
-        t = 0
-        for outframes in stream.chunks(always_2d=True):
-            # print(1e3*(time.time() - t), stream.rxbuff.read_available)
+        inframes = np.zeros((chunksize or stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
+        t = looptime = 0
+        for i, outframes in enumerate(stream.chunks(chunksize, always_2d=True), start=1):
+            dt = 1e3*(time.time() - t)
+            if i > 1: looptime += dt
+            # print(dt, stream.rxbuff.read_available)
             t = time.time()
             if not found_delay:
                 matches = outframes[:, 0].view(unsigned_dtype) == preamble
@@ -117,8 +119,8 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, **kwargs):
             nframes += len(outframes)
         assert delay != -1, "Preamble not found or was corrupted"
 
-    stats = mframes, nframes, delay, len(inpf2) - inpf2.tell(), stream._rmisses
-    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %d misses" 
+    stats = mframes, nframes, delay, len(inpf2) - inpf2.tell(), looptime / i, stream._rmisses
+    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %f interlooptime; %d misses" 
           % stats)
     return stats
 
@@ -250,8 +252,8 @@ def test_deferred_exception_handling(devargs):
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
-            stream._set_exception(MyException("BOO-urns!"))
             stream.start()
+            stream._set_exception(MyException("BOO-urns!"))
             stream.wait()
 
 def test_threaded_write_deferred_exception_handling(devargs):
