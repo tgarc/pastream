@@ -51,3 +51,21 @@ If you already have a checkout::
 Then do a pip install::
 
     $ pip install <path/to/checkout>
+
+Compilation
+------------
+
+Note that you will need to have the proper build environment set up in order to compile pastream's C extensions. 
+
+On Mac OSX and unix platforms you'll simply need to have a C compiler installed - no extra development files are required.
+
+For Windows users this `document <https://packaging.python.org/extensions/#setting-up-a-build-environment-on-windows>`_ will guide you through setting up a build environment for your Python version. To sum it up:
+
+For Python 2.7
+    Install VS2008 from `here <https://www.microsoft.com/en-gb/download/details.aspx?id=44266>`_
+
+For Python 3.4
+    Install Windows SDK for Windows 7 and .NET Framework 4  from `here <https://www.microsoft.com/en-gb/download/details.aspx?id=8279>`_
+
+For Python 3.5
+    Install VS2015 from `here <https://www.visualstudio.com/en-us/downloads/download-visual-studio-vs.aspx>`_
