@@ -1,8 +1,8 @@
 pastream Portaudio Streams for Python
-======================================
+=======================================
 
-`pastream` builds on top of `portaudio <http://www.portaudio.com/>` and the
-excellent `sounddevice <http://github.com/spatialaudio/sounddevice>` python
+`pastream` builds on top of `portaudio <http://www.portaudio.com/>`_ and the
+excellent `sounddevice <http://github.com/spatialaudio/python-sounddevice>`_ python
 bindings to provide some more advanced functionality right out of the box.
 
 
@@ -30,24 +30,24 @@ Reader/Writer Threads
 Dependencies
 ------------
 
-- `sounddevice <http://github.com/spatialaudio/sounddevice>`
+`sounddevice <http://github.com/spatialaudio/python-sounddevice>`_
 
-- `soundfile <https://github.com/bastibe/PySoundFile`
+`soundfile <https://github.com/bastibe/PySoundFile>`_
 
-- (Optional) `numpy <http://www.numpy.org/>`
+(Optional) `numpy <http://www.numpy.org/>`_
 
 
 Installation
 ------------
 
-If doing a fresh checkout:
+If doing a fresh checkout::
 
     $ git clone --recursive http://github.com/tgarc/pastream
 
-If you already have a checkout:
+If you already have a checkout::
 
     $ git submodule update --init
 
-Then do a pip install:
+Then do a pip install::
 
-    $ pip install pastream
+    $ pip install <path/to/checkout>
