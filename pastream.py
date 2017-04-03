@@ -20,15 +20,7 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
-Uses the `soundfile <http://pysoundfile.readthedocs.io>`_ and
-`sounddevice <http://python-sounddevice.readthedocs.io>`_ libraries to
-playback, record, or simultaneously playback and record audio files.
-
-Notes::
-
-  + For simplicity, this app only supports 'symmetric' full duplex audio
-    streams; i.e., the input device and output device are assumed to be
-    the same.
+pastream: Portaudio Streams for Python
 """
 from __future__ import print_function as _print_function
 try:
@@ -48,8 +40,7 @@ except:
     _np = None
 
 
-__version__ = '0.0.0'
-__usage__ = "%(prog)s [options] [-d device] input output"
+__version__ = '0.0.1'
 
 
 _PA_BUFFERSIZE = 1<<16 # Default number of frames to buffer i/o to portaudio callback
@@ -1123,8 +1114,20 @@ def _get_parser(parser=None):
     if parser is None:
         parser = ArgumentParser(formatter_class=RawDescriptionHelpFormatter,
                                 fromfile_prefix_chars='@',
-                                usage=__usage__,
-                                description=__doc__)
+                                usage="%(prog)s [options] [-d device] input output",
+                                description='''\
+Uses the `soundfile <http://pysoundfile.readthedocs.io>`_ and `sounddevice
+<http://python-sounddevice.readthedocs.io>`_ libraries to playback, record, or
+simultaneously playback and record audio files.
+
+Notes::
+
+  + 24-bit streaming is currently not supported (typically 32-bit streaming gets
+    downconverted automatically anyway)
+
+  + For simplicity, this app only supports 'symmetric' full duplex audio streams;
+    i.e., the input device and output device are assumed to be the same.'''
+                                )
         parser.convert_arg_line_to_args = lambda arg_line: arg_line.split()
 
     class ListStreamsAction(Action):
