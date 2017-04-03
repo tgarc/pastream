@@ -767,48 +767,53 @@ class _InputStreamMixin(object):
 
         done = False
         self.start()
-        sleeptime = (incframes - rxbuff.read_available) / self.samplerate
-        if sleeptime > 0:
-            self.wait(sleeptime)
-        while not (self.aborted or done):
-            # for thread safety, check the stream is active *before* reading
-            active = self.active
-            nframes = min(rxbuff.read_available, incframes)
-            if nframes < incframes:
-                if not active:
-                    done = True
-                else:
-                    self._rmisses += 1
-                    # TODO: update sleep step size dynamically to minimize read
-                    # misses
-                    _time.sleep(0.0005)
-                    continue
-
-            starttime = _time.time()
-            nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(nframes)
-            if len(buffregn2) or overlap:
-                # FIXME: this only covers the ndarray case
-                n1 = overlap + len(buffregn1)//rxbuff.elementsize
-                tempbuff[overlap:n1].data = buffregn1
-                if len(buffregn2):
-                    tempbuff[n1:n1 + len(buffregn2)//rxbuff.elementsize].data = buffregn2
-                rxbuff.advance_read_index(nframes)
-                yield tempbuff[overlap:overlap + nframes]
-                if overlap:
-                    tempbuff[:overlap] = tempbuff[-overlap:]
-            else:
-                if always_2d:
-                    yield _np.frombuffer(buffregn1, dtype=dtype).reshape(nframes, channels)
-                elif _np:
-                    yield _np.frombuffer(buffregn1, dtype=dtype)
-                else:
-                    yield buffregn1
-                rxbuff.advance_read_index(nframes)
-
-            sleeptime = (incframes - rxbuff.read_available) / self.samplerate \
-                        - (self.time - self._cstream.lastTime.inputBufferAdcTime)
+        try:
+            sleeptime = (incframes - rxbuff.read_available) / self.samplerate
             if sleeptime > 0:
                 self.wait(sleeptime)
+            while not (self.aborted or done):
+                # for thread safety, check the stream is active *before* reading
+                active = self.active
+                nframes = min(rxbuff.read_available, incframes)
+                if nframes < incframes:
+                    if not active:
+                        done = True
+                    else:
+                        self._rmisses += 1
+                        # TODO: update sleep step size dynamically to minimize read
+                        # misses
+                        _time.sleep(0.0005)
+                        continue
+
+                starttime = _time.time()
+                nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(nframes)
+                if len(buffregn2) or overlap:
+                    # FIXME: this only covers the ndarray case
+                    n1 = overlap + len(buffregn1)//rxbuff.elementsize
+                    tempbuff[overlap:n1].data = buffregn1
+                    if len(buffregn2):
+                        tempbuff[n1:n1 + len(buffregn2)//rxbuff.elementsize].data = buffregn2
+                    rxbuff.advance_read_index(nframes)
+                    yield tempbuff[overlap:overlap + nframes]
+                    if overlap:
+                        tempbuff[:overlap] = tempbuff[-overlap:]
+                else:
+                    if always_2d:
+                        yield _np.frombuffer(buffregn1, dtype=dtype).reshape(nframes, channels)
+                    elif _np:
+                        yield _np.frombuffer(buffregn1, dtype=dtype)
+                    else:
+                        yield buffregn1
+                    rxbuff.advance_read_index(nframes)
+
+                sleeptime = (incframes - rxbuff.read_available) / self.samplerate \
+                            - (self.time - self._cstream.lastTime.inputBufferAdcTime)
+                if sleeptime > 0:
+                    self.wait(sleeptime)
+        except:
+            try:                       self.abort()
+            except _sd.PortAudioError: pass
+            raise
 
 class BufferedInputStream(_InputStreamMixin, _BufferedStreamBase):
     def __init__(self, **kwargs):
@@ -1083,9 +1088,12 @@ def chunks(chunksize=None, overlap=0, always_2d=False, inpf=None,
     else:
         stream = streamclass(inpf, **kwargs)
 
-    with stream:
+    try:
         for blk in stream.chunks(chunksize, overlap, always_2d):
             yield blk
+    finally:
+        try:                       stream.close()
+        except _sd.PortAudioError: pass
 
 # Used just for the pastream app
 def _SoundFileStreamFactory(inpf=None, outf=None, **kwargs):
@@ -1253,8 +1261,6 @@ def _main(argv=None):
                     _sys.stdout.write(line); _sys.stdout.flush()
         finally:
             print()
-    except AudioBufferError as buffexc:
-        print("AudioBufferError:", buffexc, file=_sys.stderr)
     except KeyboardInterrupt:
         pass
 

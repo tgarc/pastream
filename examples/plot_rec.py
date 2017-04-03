@@ -4,20 +4,15 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import sounddevice as sd
 import pastream as ps
-import os, sys
+import sys
 import time
 pi = np.pi
 
 
 def draw(data):
     global plotdata
-    print(stream.rxbuff.read_available, time.time())
     xlim = list(ax.get_xlim())
 
-    # if (xdata[-1] + 0.1*inc) >= xlim[1]:
-    #     xlim[0] += inc; xlim[1] += inc
-    #     ax.set_xlim(*xlim)
-    #     fig.canvas.draw()
     plotdata = np.roll(plotdata, -len(data), axis=0)
     plotdata[-len(data):] = data
     line.set_ydata(plotdata)
