@@ -9,18 +9,34 @@ import time
 pi = np.pi
 
 
+update = 2048
+
+delay = [0]*25
+
 def draw(data):
-    global plotdata
+    global plotdata, rmisses, maxdelay, counter, lasttime
     xlim = list(ax.get_xlim())
 
+    delay[counter%len(delay)] = stream.rxbuff.read_available - len(data)
+    counter += 1
+    # print(time.time() - lasttime, len(data), stream.rxbuff.read_available - len(data), max(delay), stream._rmisses - rmisses)
+    lasttime = time.time()
+    rmisses = stream._rmisses
+
     plotdata = np.roll(plotdata, -len(data), axis=0)
+    if not len(data): return line,
     plotdata[-len(data):] = data
     line.set_ydata(plotdata)
 
     return line,
 
-with ps.BufferedInputStream(channels=1, device=sys.argv[1] if sys.argv[1:] else None) as stream:
-    update = 1024
+try:               dev = int(sys.argv[1])
+except IndexError: dev = None
+except ValueError: dev = sys.argv[1]
+    
+lasttime = time.time()
+counter = maxdelay = rmisses = 0
+with ps.BufferedInputStream(channels=1, device=dev, buffersize=1<<20) as stream:
     plotdata = np.zeros(10*update, dtype=stream.dtype)
 
     fig, ax = plt.subplots()
@@ -30,5 +46,6 @@ with ps.BufferedInputStream(channels=1, device=sys.argv[1] if sys.argv[1:] else 
     fig.tight_layout()
     inc = 0.9
 
-    ani = animation.FuncAnimation(fig, draw, stream.chunks(update), blit=True, interval=0)
-    plt.show()
+    ani = animation.FuncAnimation(fig, draw, stream.chunks(), blit=True, interval=0, repeat=False)
+    plt.show(block=True)
+    

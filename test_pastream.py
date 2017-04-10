@@ -93,7 +93,7 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
         found_delay = False
         unsigned_dtype = 'u%d'%stream.samplesize[1]
         nframes = mframes = 0
-        inframes = np.zeros((chunksize or stream.blocksize, stream.channels[1]), dtype=stream.dtype[1])
+        inframes = np.zeros((len(stream.rxbuff), stream.channels[1]), dtype=stream.dtype[1])
         t = looptime = 0
         for i, outframes in enumerate(stream.chunks(chunksize, always_2d=True), start=1):
             dt = 1e3*(time.time() - t)
@@ -104,14 +104,14 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
                 matches = outframes[:, 0].view(unsigned_dtype) == preamble
                 if np.any(matches): 
                     found_delay = True
-                    nonzeros = np.where(matches)[0]
-                    outframes = outframes[nonzeros[0]:]
-                    nframes += nonzeros[0]
+                    mindices = np.where(matches)[0]
+                    nframes += mindices[0]
                     delay = nframes
                     if compensate_delay: stream.padding = delay
+                    outframes = outframes[mindices[0]:]
+
             if found_delay:
                 readframes = inpf2.buffer_read_into(inframes[:len(outframes)], dtype=stream.dtype[1])
-
                 inp = inframes[:readframes].view(unsigned_dtype)
                 out = outframes[:readframes].view(unsigned_dtype)
                 npt.assert_array_equal(inp, out, "Loopback data mismatch")
@@ -144,6 +144,10 @@ def gen_random(nseconds, samplerate, channels, elementsize):
     yield preamble
 
     for i in range(nseconds):
+        # sequential pattern for debugging
+        # pattern = np.arange(i*samplerate*channels,
+        #                     (i+1)*samplerate*channels)\
+        #                     .reshape(samplerate, channels) << shift
         pattern = np.random.randint(minval, maxval+1, (samplerate, channels)) << shift
         yield pattern.astype(np.int32)
 

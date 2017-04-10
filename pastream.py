@@ -43,7 +43,7 @@ except:
 __version__ = '0.0.1'
 
 
-_PA_BUFFERSIZE = 1<<16 # Default number of frames to buffer i/o to portaudio callback
+_PA_BUFFERSIZE = 1<<20 # Default number of frames to buffer i/o to portaudio callback
 
 # Private states to determine how a stream completed
 _FINISHED = 1
@@ -345,10 +345,11 @@ class _BufferedStreamBase(_sd._StreamBase):
     rxbuff : Ringbuffer
         RingBuffer used for reading audio data from the input Portaudio stream.
     """
-    def __init__(self, kind, nframes=0, padding=0, offset=0,
+    def __init__(self, kind, device=None, samplerate=None, channels=None,
+                 dtype=None, nframes=0, padding=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
                  keep_alive=False, raise_on_xruns=False, blocksize=None,
-                 device=None, channels=None, dtype=None, **kwargs):
+                 **kwargs):
         # unfortunately we need to figure out the framesize before allocating
         # the stream in order to be able to pass our user_data
         self.txbuff = self.rxbuff = None
@@ -703,21 +704,27 @@ class _InputStreamMixin(object):
 
     # TODO: add buffer 'type' as an argument
     # TODO: add fill_value option
-    def chunks(self, chunksize=None, overlap=0, always_2d=False):
+    def chunks(self, chunksize=None, overlap=0, always_2d=False, out=None):
         """
-        Similar to SoundFile.blocks. Returns an iterator over buffered audio
-        chunks read from a Portaudio stream.
+        Similar in concept to the PySoundFile library's `blocks`
+        method. Returns an iterator over buffered audio chunks read
+        from a Portaudio stream.
 
         Parameters
         ----------
-        chunksize : int or None, optional
-            Size of chunks. This is aside from the stream `blocksize`
-            and is required if `blocksize` is zero or unset.
+        chunksize : int, optional
+            Size of iterator chunks. If not specified, the estimated
+            stream input latency will be used to determine the chunk
+            size.
         overlap : int, optional
             Number of frames to overlap across blocks.
         always_2d : bool, optional
             Always returns blocks 2 dimensional arrays. Only valid if you have
             numpy installed.
+        out : buffer object, optional
+            If you would like use your own buffer-implementing object
+            you can pass it here. Note this expects a single-byte
+            elements as would be provided by e.g., bytearray
 
         See Also
         --------
@@ -726,68 +733,107 @@ class _InputStreamMixin(object):
         Yields
         ------
         array
-            ndarray or memoryview object with `chunksize` or `blocksize` elements.
+            ndarray or memoryview object with `chunksize` elements.
         """
-        chunksize = chunksize or self.blocksize
-        if not chunksize:
-            raise ValueError("One of block or chunk size must be set")
-        if overlap and not chunksize:
-            raise ValueError("Using overlap requires a fixed known chunk or block size")
-        if overlap >= chunksize:
-            raise ValueError("Overlap must be less than chunk or block isze")
-        if _np is None and always_2d:
-            raise ValueError("always_2d is only supported with numpy")
-
+        # varsize : bool, optional
+        #     Allow variable size chunks. This option provides lower
+        #     latency by treating the chunksize as merely a suggestion
+        #     and allowing chunks to return whatever non-empty sized
+        #     chunk is available at each poll time.
         try:
             channels = self.channels[0]
+            latency = self.latency[0]
             dtype = self.dtype[0]
         except TypeError:
+            latency = self.latency
             dtype = self.dtype
             channels = self.channels
+            
+        varsize = False
+        if not chunksize:
+            if self.blocksize:
+                chunksize = self.blocksize
+            else:
+                varsize = True
+                chunksize = int(round(latency * self.samplerate))
+            if overlap:
+                raise ValueError(
+                    "Using overlap requires a fixed chunksize or stream blocksize")
+        if overlap >= chunksize:
+            raise ValueError("Overlap must be less than chunksize or stream blocksize")
+        if always_2d and (_np is None or out is not None):
+            raise ValueError("always_2d is only supported with numpy arrays")
 
-        if channels > 1:
-            always_2d = True
-
-        if _np is None:
-            tempbuff = memoryview(bytearray(chunksize*self.rxbuff.elementsize))
+        if out is not None:
+            bytebuff = tempbuff = out
+        elif _np is None:
+            if varsize: nbytes = len(self.rxbuff)*self.rxbuff.elementsize
+            else:       nbytes = chunksize*self.rxbuff.elementsize
+            bytebuff = tempbuff = memoryview(bytearray(nbytes))
         else:
-            tempbuff = _np.zeros((chunksize, channels) if always_2d else chunksize*channels, dtype=dtype)
+            if channels > 1: always_2d = True
+            if varsize: nframes = len(self.rxbuff)
+            else:       nframes = chunksize
+            tempbuff = _np.zeros((nframes, channels)
+                                 if always_2d else nframes*channels,
+                                 dtype=dtype)
+            try:                   bytebuff = tempbuff.data.cast('B')
+            except AttributeError: bytebuff = tempbuff.data
 
+        copy = bool(overlap) or out is not None
         incframes = chunksize - overlap
         rxbuff = self.rxbuff
+        boverlap = overlap*rxbuff.elementsize
+        minframes = 1 if varsize else incframes
 
+        starttime = dt = rmisses = 0 # DEBUG
+        wait_time = overtime = 0
         done = False
         self.start()
         try:
             sleeptime = (incframes - rxbuff.read_available) / self.samplerate
             if sleeptime > 0:
-                self.wait(sleeptime)
+                _time.sleep(sleeptime)
             while not (self.aborted or done):
                 # for thread safety, check the stream is active *before* reading
                 active = self.active
-                nframes = min(rxbuff.read_available, incframes)
-                if nframes < incframes:
+                nframes = rxbuff.read_available
+                lastTime = self._cstream.lastTime.currentTime
+                if nframes < minframes:
+                    if not wait_time:
+                        wait_time = self.time
                     if not active:
                         done = True
                     else:
                         self._rmisses += 1
-                        # TODO: update sleep step size dynamically to minimize read
-                        # misses
-                        _time.sleep(0.0005)
+                        _time.sleep(0.0025)
                         continue
+                elif wait_time:
+                    overtime = wait_time - lastTime
+                    wait_time = 0
 
+                # Debugging only
+                # print("{0:7.3f} {1:7.3f} {2:7.3f} {3:7.3f} {4} {5}".format(
+                #     1e3*(_time.time() - starttime), 1e3*sleeptime, 1e3*overtime,
+                #     1e3*dt, self._rmisses - rmisses, nframes - incframes))
+                rmisses = self._rmisses
                 starttime = _time.time()
-                nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(nframes)
-                if len(buffregn2) or overlap:
-                    # FIXME: this only covers the ndarray case
-                    n1 = overlap + len(buffregn1)//rxbuff.elementsize
-                    tempbuff[overlap:n1].data = buffregn1
+
+                nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(
+                    nframes if varsize else incframes)
+
+                if copy or len(buffregn2):
+                    n2offset = boverlap + len(buffregn1)
+                    bytebuff[boverlap:n2offset] = buffregn1
                     if len(buffregn2):
-                        tempbuff[n1:n1 + len(buffregn2)//rxbuff.elementsize].data = buffregn2
+                        bytebuff[n2offset:n2offset + len(buffregn2)] = buffregn2
                     rxbuff.advance_read_index(nframes)
-                    yield tempbuff[overlap:overlap + nframes]
+                    if _np:
+                        yield tempbuff[overlap:overlap + nframes]
+                    else:
+                        yield bytebuff[boverlap:boverlap + nframes*rxbuff.elementsize]
                     if overlap:
-                        tempbuff[:overlap] = tempbuff[-overlap:]
+                        bytebuff[:boverlap] = bytebuff[-boverlap:]
                 else:
                     if always_2d:
                         yield _np.frombuffer(buffregn1, dtype=dtype).reshape(nframes, channels)
@@ -797,26 +843,29 @@ class _InputStreamMixin(object):
                         yield buffregn1
                     rxbuff.advance_read_index(nframes)
 
+                dt = _time.time() - starttime # DEBUG
+
                 sleeptime = (incframes - rxbuff.read_available) / self.samplerate \
-                            - (self.time - self._cstream.lastTime.inputBufferAdcTime)
+                  + self._cstream.lastTime.currentTime - self.time \
+                  - overtime
                 if sleeptime > 0:
-                    self.wait(sleeptime)
+                    _time.sleep(sleeptime)
         except:
             try:                       self.abort()
             except _sd.PortAudioError: pass
             raise
 
 class BufferedInputStream(_InputStreamMixin, _BufferedStreamBase):
-    def __init__(self, **kwargs):
-        super(BufferedInputStream, self).__init__('input', **kwargs)
+    def __init__(self, *args, **kwargs):
+        super(BufferedInputStream, self).__init__('input', *args, **kwargs)
 
 class BufferedOutputStream(_BufferedStreamBase):
-    def __init__(self, **kwargs):
-        super(BufferedOutputStream, self).__init__('output', **kwargs)
+    def __init__(self, *args, **kwargs):
+        super(BufferedOutputStream, self).__init__('output', *args, **kwargs)
 
 class BufferedStream(BufferedInputStream, BufferedOutputStream):
-    def __init__(self, **kwargs):
-        _BufferedStreamBase.__init__(self, 'duplex', **kwargs)
+    def __init__(self, *args, **kwargs):
+        _BufferedStreamBase.__init__(self, 'duplex', *args, **kwargs)
 
 class _SoundFileStreamBase(_BufferedStreamBase):
     """
@@ -1029,23 +1078,15 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
                                       outf=outf, buffersize=buffersize,
                                       sfkwargs=sfkwargs, **kwargs)
 
-def chunks(chunksize=None, overlap=0, always_2d=False, inpf=None, 
+def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
            streamclass=None, **kwargs):
     """
-    Read audio data in chunks from a Portaudio stream. Can be either half-duplex
-    (recording-only) or full-duplex (if an input file is supplied).
+    Read audio data in iterable chunks from a Portaudio stream.
 
     Parameters
     ------------
-    chunksize : int or None, optional
-        Size of chunks. This is aside from the stream `blocksize` and is
-        required if `blocksize` is zero or unset. If zero or None,
-        chunksize=blocksize.
-    overlap : int, optinal
-        Number of frames to overlap across blocks.
-    always_2d : bool, optional
-        Always returns blocks as 2 dimensional arrays. Only valid if
-        you have numpy installed.
+    chunksize, overlap, always_2d, out
+        See :meth:`BufferedStream.chunks` for description.
     inpf : SoundFile compatible input or None, optional
         Optional input stimuli.
 
@@ -1065,7 +1106,7 @@ def chunks(chunksize=None, overlap=0, always_2d=False, inpf=None,
     Yields
     -------
     array
-        ndarray or memoryview object with `blocksize` elements.
+        ndarray or memoryview object with `chunksize` elements.
     """
     if streamclass is None:
         if inpf is not None:
@@ -1080,7 +1121,7 @@ def chunks(chunksize=None, overlap=0, always_2d=False, inpf=None,
         stream = streamclass(inpf, **kwargs)
 
     try:
-        for blk in stream.chunks(chunksize, overlap, always_2d):
+        for blk in stream.chunks(chunksize, overlap, always_2d, out):
             yield blk
     finally:
         try:                       stream.close()
