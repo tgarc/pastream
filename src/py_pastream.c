@@ -135,7 +135,7 @@ int callback(
         }
     }
 
-    stream->lastTime = timeInfo;
+    *stream->lastTime = *timeInfo;
     stream->frame_count += frame_count;
     return stream->last_callback;
 }

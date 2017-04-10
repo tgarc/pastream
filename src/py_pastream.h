@@ -6,7 +6,7 @@ typedef struct Py_PaBufferedStream {
     PaStreamCallbackFlags abort_on_xrun;
     int keep_alive;
     /* int paused; */
-    const PaStreamCallbackTimeInfo* lastTime;
+    PaStreamCallbackTimeInfo* lastTime;
     int last_callback;
     int __nframesIsUnset;         // Internal only
     unsigned long xruns;
