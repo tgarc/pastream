@@ -36,7 +36,7 @@ except ValueError: dev = sys.argv[1]
     
 lasttime = time.time()
 counter = maxdelay = rmisses = 0
-with ps.BufferedInputStream(channels=1, device=dev, buffersize=1<<20) as stream:
+with ps.BufferedInputStream(channels=1, device=dev) as stream:
     plotdata = np.zeros(10*update, dtype=stream.dtype)
 
     fig, ax = plt.subplots()
