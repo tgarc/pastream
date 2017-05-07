@@ -829,9 +829,9 @@ class _InputStreamMixin(object):
                         bytebuff[n2offset:n2offset + len(buffregn2)] = buffregn2
                     rxbuff.advance_read_index(nframes)
                     if _np:
-                        yield tempbuff[overlap:overlap + nframes]
+                        yield tempbuff[:overlap + nframes]
                     else:
-                        yield bytebuff[boverlap:boverlap + nframes*rxbuff.elementsize]
+                        yield bytebuff[:boverlap + nframes*rxbuff.elementsize]
                     if overlap:
                         bytebuff[:boverlap] = bytebuff[-boverlap:]
                 else:
