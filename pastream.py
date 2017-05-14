@@ -448,6 +448,7 @@ class _BufferedStreamBase(_sd._StreamBase):
 
         super(_BufferedStreamBase, self).__init__(kind, blocksize=blocksize,
                                                   device=device,
+                                                  samplerate=samplerate,
                                                   channels=channels,
                                                   dtype=dtype,
                                                   finished_callback=finished_callback,
