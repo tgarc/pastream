@@ -17,15 +17,13 @@ import pastream as ps
 system = platform.system()
 if system == 'Windows':
     DEVICE_KWARGS = { 'device': 'ASIO4ALL v2, ASIO', 'dtype': 'int24',
-                      'blocksize': 512, 'channels': 8, 'samplerate':48000 }
+                      'channels': 8, 'samplerate':48000 }
 elif system == 'Darwin':
-    raise Exception("Currently no support for Mac devices")
+    raise Exception("Currently no test support for OSX")
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
-    DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'blocksize': 512,
-                      'channels': 1, 'samplerate': 48000 }
-
-#DEVICE_KWARGS = { 'device': "miniDSP ASIO Driver, ASIO", 'dtype': 'int24', 'blocksize': 512, 'channels': 8, 'samplerate': 48000 }
+    DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'channels':
+                      1, 'samplerate': 48000 }
 
 if 'SOUNDDEVICE_DEVICE_NAME' in os.environ:
     DEVICE_KWARGS['device'] = os.environ['SOUNDDEVICE_DEVICE_NAME']
@@ -187,14 +185,13 @@ def test_chunks_loopback(random_soundfile_input):
     inp_fh, preamble, dtype = random_soundfile_input
     assert_chunks_equal(inp_fh, preamble, dtype=dtype)
 
-def test_SoundFileStream_loopback(random_soundfile_input, devargs):
+def test_soundfilestream_loopback(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
     devargs['dtype'] = dtype
-    devargs['sfkwargs'] = {'format': 'wav'}
 
     outf = tempfile.TemporaryFile()
-    with ps.SoundFileStream(inp_fh, outf, **devargs) as stream:
+    with ps.SoundFileStream(inp_fh, outf, format='wav', **devargs) as stream:
         stream.start()
         stream.wait()
 

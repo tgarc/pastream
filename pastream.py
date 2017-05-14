@@ -40,7 +40,7 @@ except:
     _np = None
 
 
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 
 _PA_BUFFERSIZE = 1<<20 # Default number of frames to buffer i/o to portaudio callback
@@ -448,10 +448,10 @@ class _BufferedStreamBase(_sd._StreamBase):
 
         super(_BufferedStreamBase, self).__init__(kind, blocksize=blocksize,
                                                   device=device,
-                                                  samplerate=samplerate,
                                                   channels=channels,
                                                   dtype=dtype,
                                                   finished_callback=finished_callback,
+                                                  samplerate=samplerate,
                                                   **kwargs)
 
         self._rmisses = self._wmisses = 0
@@ -736,11 +736,6 @@ class _InputStreamMixin(object):
         array
             ndarray or memoryview object with `chunksize` elements.
         """
-        # varsize : bool, optional
-        #     Allow variable size chunks. This option provides lower
-        #     latency by treating the chunksize as merely a suggestion
-        #     and allowing chunks to return whatever non-empty sized
-        #     chunk is available at each poll time.
         try:
             channels = self.channels[0]
             latency = self.latency[0]
@@ -868,17 +863,9 @@ class BufferedStream(BufferedInputStream, BufferedOutputStream):
     def __init__(self, *args, **kwargs):
         _BufferedStreamBase.__init__(self, 'duplex', *args, **kwargs)
 
+
 class _SoundFileStreamBase(_BufferedStreamBase):
     """
-    This helper class basically gives you two things:
-
-        1) it provides complete reader and writer functions for SoundFile
-           objects (or anything that can be opened as a SoundFile object)
-
-        2) it automatically sets parameters for the stream based on the input
-           file and automatically sets parameters for the output file based on
-           the output stream.
-
     Parameters
     ----------
     inpf : SoundFile compatible input
@@ -898,26 +885,34 @@ class _SoundFileStreamBase(_BufferedStreamBase):
 
     Other Parameters
     ----------------------
+    format, subtype, endian
+        Parameters to pass to SoundFile constructor(s). Accepts pairs to allow
+        different parameters for input and output.
     reader, writer, kind, blocksize, **kwargs
         Additional parameters to pass to _BufferedStreamBase.
     """
     def __init__(self, kind, inpf=None, outf=None, reader=None,
-                 writer=None, sfkwargs={}, **kwargs):
+                 writer=None, format=None, subtype=None, endian=None, **kwargs):
+        isubtype, osubtype = _sd._split(subtype)
+        iformat, oformat = _sd._split(format)
+        iendian, oendian = _sd._split(endian)
+
+        raw_input = iformat and iformat.lower() == 'raw'
         # At this point we don't care what 'kind' the stream is, only whether
         # the input/output is None which determines whether reader/writer
         # functions should be registered
         self._inpf = inpf
         if self._inpf is not None:
-            if not isinstance(self._inpf, _sf.SoundFile):
-                self.inp_fh = _sf.SoundFile(self._inpf)
-            else:
-                self.inp_fh = self._inpf
-            if kwargs.get('samplerate', None) is None:
-                kwargs['samplerate'] = self.inp_fh.samplerate
-            if kwargs.get('channels', None) is None:
-                kwargs['channels'] = self.inp_fh.channels
             if writer is None:
                 writer = self._soundfilereader
+            if isinstance(self._inpf, _sf.SoundFile):
+                self.inp_fh = self._inpf
+            elif not raw_input:
+                self.inp_fh = _sf.SoundFile(self._inpf)
+                if kwargs.get('samplerate', None) is None:
+                    kwargs['samplerate'] = self.inp_fh.samplerate
+                if kwargs.get('channels', None) is None:
+                    kwargs['channels'] = self.inp_fh.channels
         else:
             self.inp_fh = self._inpf
 
@@ -929,8 +924,14 @@ class _SoundFileStreamBase(_BufferedStreamBase):
         self.out_fh = None
 
         super(_SoundFileStreamBase, self).__init__(kind, reader=reader,
-                                                   writer=writer,
-                                                   **kwargs)
+                                                   writer=writer, **kwargs)
+
+        # For raw input file, assume the format corresponds to the device
+        # parameters
+        if raw_input:
+            channels = kind == 'duplex' and self.channels[1] or self.channels
+            self.inp_fh = _sf.SoundFile(self._inpf, 'r', int(self.samplerate),
+                                        channels, isubtype, iendian, 'raw')
 
         # Try and determine the file extension here; we need to know it if we
         # want to try and set a default subtype for the output
@@ -943,19 +944,17 @@ class _SoundFileStreamBase(_BufferedStreamBase):
         # the input file and output stream settings, plus any user supplied
         # arguments
         if not (self._outf is None or isinstance(self._outf, _sf.SoundFile)):
-            if self.inp_fh is not None:
-                if sfkwargs.get('endian', None) is None:
-                    sfkwargs['endian'] = self.inp_fh.endian
-                if (sfkwargs.get('subtype', None) is None
-                    and _sf.check_format(sfkwargs.get('format', None) or outext, self.inp_fh.subtype)):
-                    sfkwargs['subtype'] = self.inp_fh.subtype
-            if sfkwargs.get('channels', None) is None:
-                sfkwargs['channels'] = self.channels[0] if kind == 'duplex' else self.channels
-            if sfkwargs.get('samplerate', None) is None:
-                sfkwargs['samplerate'] = int(self.samplerate)
-            if sfkwargs.get('mode', None) is None:
-                sfkwargs['mode'] = 'w+b'
-            self.out_fh = _sf.SoundFile(self._outf, **sfkwargs)
+            # For those file formats which support PCM or float, use the
+            # samplesize to make a guess at a default subtype
+            channels = kind == 'duplex' and self.channels[0] or self.channels
+            dtype = kind == 'duplex' and self.dtype[0] or self.dtype
+            samplesize = kind == 'duplex' and self.samplesize[0] or self.samplesize
+            if 'float' in dtype: subtype = 'float'
+            else:                subtype = 'pcm_{0}'.format(8*samplesize)
+            if osubtype is None and (oformat or outext) and \
+               _sf.check_format(oformat, subtype, oendian): osubtype = subtype
+            self.out_fh = _sf.SoundFile(self._outf, 'w', int(self.samplerate),
+                                        channels, osubtype, oendian, oformat)
         else:
             self.out_fh = self._outf
 
@@ -1028,20 +1027,19 @@ class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
     Parameters
     -----------
     outf : SoundFile compatible input
-        Output file to write captured audio data. If a SoundFile is
-        not passed, the output file parameters will be determined from
-        the output audio stream.
-    sfkwargs : dict
-        Arguments to pass when creating SoundFile when outf is not
-        already a SoundFile object. This allows overriding of any of
-        the default stream derived parameters.
+        Output file to write captured audio data. If a SoundFile is not passed,
+        the output file parameters will be determined from the output audio
+        device stream.
+    format, subtype, endian
+        Arguments to pass to the SoundFile constructor when outf is not already
+        a SoundFile object.
 
     Other Parameters
     -----------------
     **kwargs
         Additional parameters to pass to SoundFileStreamBase.
     """
-    def __init__(self, outf, sfkwargs={}, **kwargs):
+    def __init__(self, outf, **kwargs):
         super(SoundFileInputStream, self).__init__('input', outf=outf,
                                                    sfkwargs=sfkwargs,
                                                    **kwargs)
@@ -1053,8 +1051,9 @@ class SoundFileOutputStream(_SoundFileStreamBase):
     Parameters
     -----------
     inpf : SoundFile compatible input
-        Input file to stream to audio device. The input file will determine the
-        samplerate and number of channels for the audio stream.
+        Input file to stream to audio device. Except in the case of a RAW file,
+        the audio file will determine the default ``samplerate`` and
+        ``channels`` for the output audio stream.
     """
     def __init__(self, inpf, buffersize=_PA_BUFFERSIZE, **kwargs):
         super(SoundFileOutputStream, self).__init__('output', inpf=inpf,
@@ -1069,16 +1068,16 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
     stream's owner thread.
     """
     def __init__(self, inpf=None, outf=None, buffersize=_PA_BUFFERSIZE,
-                 sfkwargs={}, **kwargs):
+                 **kwargs):
         # If you're not using soundfiles for the input or the output,
         # then you should probably be using the BufferedStream class
         if inpf is None and outf is None:
             raise ValueError("No input or output file given.")
 
-        _SoundFileStreamBase.__init__(self, 'duplex', inpf=inpf,
-                                      outf=outf, buffersize=buffersize,
-                                      sfkwargs=sfkwargs, **kwargs)
+        _SoundFileStreamBase.__init__(self, 'duplex', inpf=inpf, outf=outf,
+                                      buffersize=buffersize, **kwargs)
 
+# TODO: add support for generic 'input' which accepts file, buffer, or ndarray
 def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
            streamclass=None, **kwargs):
     """
@@ -1088,7 +1087,7 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
     ------------
     chunksize, overlap, always_2d, out
         See :meth:`BufferedStream.chunks` for description.
-    inpf : SoundFile compatible input or None, optional
+    inpf : SoundFile compatible input, optional
         Optional input stimuli.
 
     Other Parameters
@@ -1128,7 +1127,7 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
         try:                       stream.close()
         except _sd.PortAudioError: pass
 
-# Used just for the pastream app
+# Used solely for the pastream app
 def _SoundFileStreamFactory(inpf=None, outf=None, **kwargs):
     if inpf is not None and outf is not None:
         Streamer = SoundFileStream
@@ -1186,13 +1185,13 @@ Notes::
         assert intarg > 0, "Must be a positive value."
         return intarg
 
-    parser.add_argument("input", type=lambda x: None if x=='-' else x,
+    parser.add_argument("input", type=lambda x: None if x == 'null' else x,
                         help='''\
-Input audio file, or, use the special designator '-' for recording only.''')
+Input audio file, or, use the special designator 'null' for recording only.''')
 
-    parser.add_argument("output", type=lambda x: None if x=='-' else x,
+    parser.add_argument("output", type=lambda x: None if x == 'null' else x,
                         help='''\
-Output recording file, or, use the special designator '-' for playback only.''')
+Output recording file, or, use the special designator 'null' for playback only.''')
 
 #     parser.add_argument("--loop", default=False, nargs='?', metavar='n', const=True, type=int,
 #                         help='''\
@@ -1240,40 +1239,41 @@ backend will decide an optimal size.''')
                          type=lambda x: int(float(x[:-1])*1000) if x.endswith('k') else int(x),
                          help="Sample rate in Hz. Add a 'k' suffix to specify kHz.")
 
-    fileopts = parser.add_argument_group('''\
-Output file format options''')
+    fileopts = parser.add_argument_group("File format options")
 
-    fileopts.add_argument("-t", dest="file_type", choices=_sf.available_formats().keys(),
+    fileopts.add_argument("-t", dest="file_type", action='append',
+                          choices=_sf.available_formats().keys(),
                           type=str.upper,
                           help='''\
 Output file type. Typically this is determined from the file extension, but it
 can be manually overridden here.''')
 
-    fileopts.add_argument("-e", dest="encoding", choices=_sf.available_subtypes(),
+    fileopts.add_argument("-e", dest="encoding", action='append', 
+                          choices=_sf.available_subtypes(),
                           type=str.upper,
                           help="Sample format encoding.")
 
-    fileopts.add_argument("--endian", choices=['file', 'big', 'little'],
+    fileopts.add_argument("--endian", action='append',
+                          choices=['file', 'big', 'little'],
                           help="Byte endianness.")
 
     return parser
 
 def _main(argv=None):
-    if argv is None: argv=_sys.argv[1:]
+    if argv is None: argv = _sys.argv[1:]
     parser = _get_parser()
     args = parser.parse_args(argv)
 
-    sfkwargs=dict()
+    flatten_singles = lambda x: x[0] if x and len(x) == 1 else x
+
     stream, kind = _SoundFileStreamFactory(args.input, args.output,
                                            buffersize=args.qsize,
                                            nframes=args.nframes,
                                            padding=args.pad,
                                            offset=args.offset,
-                                           sfkwargs={
-                                               'endian': args.endian,
-                                               'subtype': args.encoding,
-                                               'format': args.file_type
-                                           },
+                                           endian=flatten_singles(args.endian),
+                                           subtype=flatten_singles(args.encoding),
+                                           format=flatten_singles(args.file_type),
                                            device=args.device,
                                            channels=args.channels,
                                            dtype=args.dtype,
