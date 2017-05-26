@@ -691,9 +691,9 @@ class _BufferedStreamBase(_sd._StreamBase):
         else:
             name = tuple(_sd.query_devices(d)['name'] for d in self._device)
         if isinstance(self.channels, int) or self.channels[0] == self.channels[1]:
-            channels = self.channels
-        else:
             channels = self.channels[0]
+        else:
+            channels = self.channels
         if self.dtype[0] == self.dtype[1]:
             dtype = self.dtype[0]
         else:
@@ -702,9 +702,8 @@ class _BufferedStreamBase(_sd._StreamBase):
                 "channels={3}, dtype='{4}', blocksize={2._blocksize})").format(
             self.__class__, name, self, channels, dtype)
 
+
 # Mix-in purely for adding chunks method
-
-
 class _InputStreamMixin(object):
 
     # TODO: add buffer 'type' as an argument
@@ -968,7 +967,7 @@ class _SoundFileStreamBase(_BufferedStreamBase):
                 else:
                     raise ValueError('''\
 Could not determine an appropriate default subtype for '{0}' output file
-format: subtype required'''.format(oformat))
+format: please specify subtype'''.format(oformat))
             self.out_fh = _sf.SoundFile(self._outf, 'w', int(self.samplerate),
                               channels, osubtype, oendian, oformat)
         else:
@@ -1181,12 +1180,12 @@ Cross platform audio playback and capture.''')
             print(_sd.query_devices())
             _sys.exit(0)
 
-    def csv(subtype=None):
-        if not subtype: subtype = lambda x: x
+    def csv(arg):
+        subtype = arg if callable(arg) else (lambda x: x)
         def csv(value):
             values = [subtype(v) or None for v in value.split(',')]
             return values[0] if len(values) == 1 else values
-        return csv
+        return csv if callable(arg) else csv(arg)
 
     def dvctype(dvc):
         dvclist = []
@@ -1195,18 +1194,27 @@ Cross platform audio playback and capture.''')
             except ValueError: dvclist.append(v or None)
         return dvclist[0] if len(dvclist) == 1 else dvclist
 
+    def sizetype(x):
+        if x.endswith('k'):   x = int(float(x[:-1]) * 1e3)
+        elif x.endswith('K'): x = int(float(x[:-1]) * 1024)
+        elif x.endswith('m'): x = int(float(x[:-1]) * 1e6)
+        elif x.endswith('M'): x = int(float(x[:-1]) * 1024 * 1024)
+        else:                 x = int(x)
+        assert x > 0, "Must be a positive value."
+        return x
+
     def posint(intarg):
         intarg = int(intarg)
         assert intarg > 0, "Must be a positive value."
         return intarg
 
     parser.add_argument("input", type=lambda x: None if x == 'null' else x,
-                        help='''\
+        help='''\
 Input audio file. Use the special designator 'null' for recording only. A
 single dash '-' may be used to read from STDIN.''')
 
     parser.add_argument("output", type=lambda x: None if x == 'null' else x,
-                        help='''\
+        help='''\
 Output audio file. Use the special designator 'null' for playback only. A
 single dash '-' may be used to write to STDOUT.''')
 
@@ -1217,41 +1225,43 @@ single dash '-' may be used to write to STDOUT.''')
 # loop infinitely. Does nothing if there is no playback.''')
 
     parser.add_argument("-l", action=ListStreamsAction, nargs=0,
-                        help="List available audio device streams.")
+        help="List available audio device streams.")
 
-    parser.add_argument("-q", "--buffersize", type=posint,
+    parser.add_argument("-q", "--buffersize", type=sizetype,
                         default=_PA_BUFFERSIZE, help='''\
-File buffering size (in units of frames). Must be a power of 2, Determines the
-maximum amount of buffering for the input/output file(s). Use higher values to
-increase robustness against irregular file i/o behavior. (Default
-0x%(default)x)''')
+File buffering size (in units of frames). Must be a power of
+2. Determines the maximum amount of buffering for the input/output
+file(s). Use higher values to increase robustness against irregular
+file i/o behavior. Add a 'K' or 'M' suffix to specify size in kibi or
+mebi respectively. (Default 0x%(default)x)''')
 
-    parser.add_argument("-p", "--pad", type=posint, default=0, help='''\
+    parser.add_argument("-p", "--pad", type=sizetype, default=0, help='''\
 Pad the input with frames of zeros. Useful to avoid truncating full duplex
 recording.''')
 
-    parser.add_argument("-o", "--offset", type=posint, default=0, help='''\
+    parser.add_argument("-o", "--offset", type=sizetype, default=0, help='''\
 Drop a number of frames from the start of a recording.''')
 
-    parser.add_argument("-n", "--nframes", type=posint, default=0, help='''\
+    parser.add_argument("-n", "--nframes", type=sizetype, default=0, help='''\
 Limit playback/capture to this many frames.''')
 
     devopts = parser.add_argument_group("I/O device stream options")
 
     devopts.add_argument("-d", "--device", type=dvctype,
         help='''\
-Audio device name expression or index number. Defaults to the PortAudio default
-device.''')
+Audio device name expression or index number. Defaults to the
+PortAudio default device.''')
 
-    devopts.add_argument("-b", "--blocksize", type=int, help='''\
+    devopts.add_argument("-b", "--blocksize", type=posint, help='''\
 PortAudio buffer size in units of frames. If zero or not specified, backend
 will decide an optimal size.''')
 
     devopts.add_argument("-f", "--format", dest='dtype',
-        type=csv(), choices=_sd._sampleformats.keys(), help='''\
+        type=csv, choices=_sd._sampleformats.keys(), help='''\
 Sample format of device I/O stream.''')
 
-    devopts.add_argument("-c", "--channels", type=csv(int), help="Number of channels.")
+    devopts.add_argument("-c", "--channels", type=csv(int),
+        help="Number of channels.")
 
     devopts.add_argument("-r", "--rate", dest='samplerate',
         type=lambda x: int(float(x[:-1]) * 1000) if x.endswith('k') else int(x),
