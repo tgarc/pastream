@@ -687,7 +687,7 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     def __repr__(self):
         if isinstance(self.device, int) or self.device[0] == self.device[1]:
-            name = sd.query_devices(self._device)['name']
+            name = _sd.query_devices(self._device)['name']
         else:
             name = tuple(_sd.query_devices(d)['name'] for d in self._device)
         if isinstance(self.channels, int) or self.channels[0] == self.channels[1]:
@@ -698,9 +698,9 @@ class _BufferedStreamBase(_sd._StreamBase):
             dtype = self.dtype[0]
         else:
             dtype = self.dtype
-        return ("{0.__name___}('{1}', samplerate={2._samplerate:.0f}, "
+        return ("{0.__name__}('{1}', samplerate={2._samplerate:.0f}, "
                 "channels={3}, dtype='{4}', blocksize={2._blocksize})").format(
-                    self.__class__, name, self, channels, dtype)
+            self.__class__, name, self, channels, dtype)
 
 # Mix-in purely for adding chunks method
 
@@ -1181,9 +1181,19 @@ Cross platform audio playback and capture.''')
             print(_sd.query_devices())
             _sys.exit(0)
 
+    def csv(subtype=None):
+        if not subtype: subtype = lambda x: x
+        def csv(value):
+            values = [subtype(v) or None for v in value.split(',')]
+            return values[0] if len(values) == 1 else values
+        return csv
+
     def dvctype(dvc):
-        try:               return int(dvc)
-        except ValueError: return dvc
+        dvclist = []
+        for v in dvc.split(','):
+            try:               dvclist.append(int(v))
+            except ValueError: dvclist.append(v or None)
+        return dvclist[0] if len(dvclist) == 1 else dvclist
 
     def posint(intarg):
         intarg = int(intarg)
@@ -1228,8 +1238,8 @@ Limit playback/capture to this many frames.''')
 
     devopts = parser.add_argument_group("I/O device stream options")
 
-    devopts.add_argument("-d", "--device", type=dvctype, nargs='+',
-        action='append', help='''\
+    devopts.add_argument("-d", "--device", type=dvctype,
+        help='''\
 Audio device name expression or index number. Defaults to the PortAudio default
 device.''')
 
@@ -1237,14 +1247,13 @@ device.''')
 PortAudio buffer size in units of frames. If zero or not specified, backend
 will decide an optimal size.''')
 
-    devopts.add_argument("-f", "--format", dest='dtype', action='append',
-        nargs='+', choices=_sd._sampleformats.keys(), help='''\
+    devopts.add_argument("-f", "--format", dest='dtype',
+        type=csv(), choices=_sd._sampleformats.keys(), help='''\
 Sample format of device I/O stream.''')
 
-    devopts.add_argument("-c", "--channels", type=int, action='append',
-        nargs='+', help="Number of channels.")
+    devopts.add_argument("-c", "--channels", type=csv(int), help="Number of channels.")
 
-    devopts.add_argument("-r", "--rate", dest='samplerate', nargs='+',
+    devopts.add_argument("-r", "--rate", dest='samplerate',
         type=lambda x: int(float(x[:-1]) * 1000) if x.endswith('k') else int(x),
         help='''\
 Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
@@ -1252,42 +1261,39 @@ Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
     fileopts = parser.add_argument_group('''\
 Audio file formatting options. Options accept single values or pairs''')
 
-    fileopts.add_argument("-t", dest="file_type", action='append', nargs='+',
-        choices=_sf.available_formats().keys(), type=str.upper, help='''\
+    fileopts.add_argument("-t", dest="file_type", type=csv(str.upper),
+        choices=_sf.available_formats().keys(), help='''\
 Audio file type. (Required for RAW files). Typically this is determined from
 the file header or extension, but it can be manually specified here.''')
 
-    fileopts.add_argument("-e", dest="encoding", action='append', nargs='+',
-        choices=_sf.available_subtypes(), type=str.upper, help='''\
+    fileopts.add_argument("-e", dest="encoding", type=csv(str.upper),
+        choices=_sf.available_subtypes(), help='''\
 Sample format encoding. Note for output file encodings: for file types that
 support PCM or FLOAT format, pastream will automatically choose the sample
 format that best matches the output device stream; otherwise, the subtype is
 required.''')
 
-    fileopts.add_argument("--endian", action='append', nargs='+',
+    fileopts.add_argument("--endian", type=csv(str.lower),
         choices=['file', 'big', 'little'], help="Sample endianness.")
 
     return parser
 
 
 def _main(argv=None):
+    from itertools import chain
     if argv is None: argv = _sys.argv[1:]
     parser = _get_parser()
     args = parser.parse_args(argv)
 
-    def flatten_singles(x):
-        return x[0] if x and len(x) == 1 else x
-
     stream, kind = _SoundFileStreamFactory(args.input, args.output,
-                        samplerate=args.samplerate, blocksize=args.blocksize,
-                        buffersize=args.qsize, nframes=args.nframes,
-                        padding=args.pad, offset=args.offset,
-                        endian=flatten_singles(args.endian),
-                        subtype=flatten_singles(args.encoding),
-                        format=flatten_singles(args.file_type),
-                        device=flatten_singles(args.device),
-                        channels=flatten_singles(args.channels),
-                        dtype=flatten_singles(args.dtype))
+                        samplerate=args.samplerate,
+                        blocksize=args.blocksize,
+                        buffersize=args.buffersize,
+                        nframes=args.nframes, padding=args.pad,
+                        offset=args.offset, endian=args.endian,
+                        subtype=args.encoding, format=args.file_type,
+                        device=args.device, channels=args.channels,
+                        dtype=args.dtype)
 
     statline = "\r{:8.3f}s {:10d} frames processed, {:>8s} frames free, " \
                "{:>8s} frames queued ({:d} xruns, {:f}% load)\r"
