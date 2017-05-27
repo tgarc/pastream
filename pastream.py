@@ -690,11 +690,13 @@ class _BufferedStreamBase(_sd._StreamBase):
             name = _sd.query_devices(self._device)['name']
         else:
             name = tuple(_sd.query_devices(d)['name'] for d in self._device)
-        if isinstance(self.channels, int) or self.channels[0] == self.channels[1]:
-            channels = self.channels[0]
-        else:
+        if isinstance(self.channels, int) or self.channels[0] != self.channels[1]:
             channels = self.channels
+        else:
+            channels = self.channels[0]
         if self.dtype[0] == self.dtype[1]:
+            # this is a hack that works only because there are no dtypes that
+            # start with the same two characters
             dtype = self.dtype[0]
         else:
             dtype = self.dtype
