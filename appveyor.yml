@@ -1,0 +1,32 @@
+notifications:
+  - provider: Email
+    on_build_success: false
+    on_build_failure: false
+    on_build_status_changed: false
+
+environment:
+  TWINE_USERNAME: tgarc
+  TWINE_PASSWORD:
+    secure: DOd96g4ffAQbXuqMwLlpMw==
+  CIBW_SKIP: 'cp26* cp33*'
+
+install:
+  - pip install cibuildwheel==0.2.1
+  - git submodule update --init --recursive
+
+build_script:
+  - cibuildwheel --output-dir wheelhouse
+
+deploy_script:
+  - ps: |
+      python -m pip install twine
+      if ($env:APPVEYOR_REPO_TAG -eq "true") {
+          python -m twine upload (resolve-path wheelhouse\*.whl) --skip-existing
+      }
+      elseif ($env:APPVEYOR_REPO_BRANCH -eq "master") {
+          python -m twine upload (resolve-path wheelhouse\*.whl) --skip-existing --repository-url "https://testpypi.python.org/pypi"
+      }
+
+artifacts:
+  - path: "wheelhouse\\*.whl"
+    name: Wheels

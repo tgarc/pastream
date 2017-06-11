@@ -36,7 +36,7 @@ import weakref as _weakref
 from _py_pastream import ffi as _ffi, lib as _lib
 
 
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 __usage__ = "%(prog)s [options] [-d device] input output"
 
 # Set a default size for the audio callback ring buffer
@@ -675,11 +675,12 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._reraise_exceptions()
 
     def close(self):
-        # we take special care here to abort the stream first so that it
-        # is still valid for the lifetime of the read/write threads
-        with self.__streamlock:
-            self.__aborting = True
-            super(_BufferedStreamBase, self).abort()
+        # we take special care here to abort the stream first so that it is
+        # still valid for the lifetime of the read/write threads
+        if not self.finished:
+            with self.__streamlock:
+                self.__aborting = True
+                super(_BufferedStreamBase, self).abort()
         self.__stopiothreads()
         with self.__streamlock:
             super(_BufferedStreamBase, self).close()
@@ -788,7 +789,7 @@ class _InputStreamMixin(object):
         minframes = 1 if varsize else incframes
 
         starttime = dt = rmisses = 0  # DEBUG
-        wait_time = overtime = 0
+        wait_time = leadtime = 0
         done = False
         self.start()
         try:
@@ -810,12 +811,12 @@ class _InputStreamMixin(object):
                         _time.sleep(0.0025)
                         continue
                 elif wait_time:
-                    overtime = wait_time - lastTime
+                    leadtime = lastTime - wait_time
                     wait_time = 0
 
                 # Debugging only
                 # print("{0:7.3f} {1:7.3f} {2:7.3f} {3:7.3f} {4} {5}".format(
-                #     1e3*(_time.time() - starttime), 1e3*sleeptime, 1e3*overtime,
+                #     1e3*(_time.time() - starttime), 1e3*sleeptime, 1e3*leadtime,
                 #     1e3*dt, self._rmisses - rmisses, nframes - incframes))
                 rmisses = self._rmisses
                 starttime = _time.time()
@@ -847,9 +848,10 @@ class _InputStreamMixin(object):
 
                 dt = _time.time() - starttime  # DEBUG
 
+                # lagtime = self.time - self._cstream.lastTime.currentTime
                 sleeptime = (incframes - rxbuff.read_available) / self.samplerate \
-                    + self._cstream.lastTime.currentTime - self.time \
-                    - overtime
+                    + self._cstream.lastTime.currentTime - self.time              \
+                    + leadtime
                 if sleeptime > 0:
                     _time.sleep(sleeptime)
         except:
@@ -984,17 +986,21 @@ format: please specify subtype'''.format(oformat))
         else:
             dtype = stream.dtype
 
-        dt = len(rxbuff) / stream.samplerate / 8
+        chunksize = 8192
+        sleeptime = (chunksize - rxbuff.read_available) / stream.samplerate
+        if sleeptime > 0:
+            _time.sleep(sleeptime)
         while not stream.aborted:
             # for thread safety, check the stream is active *before* reading
             active = stream.active
             nframes = rxbuff.read_available
+            lastTime = stream._cstream.lastTime.currentTime
             if nframes == 0:
                 # we've read everything and the stream is done; seeya!
                 if not active: break
                 # we're reading too fast, wait for a buffer write
                 stream._rmisses += 1
-                stream.wait(dt)
+                _time.sleep(0.0025)
                 continue
 
             nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(nframes)
@@ -1002,6 +1008,10 @@ format: please specify subtype'''.format(oformat))
             if len(buffregn2):
                 stream.out_fh.buffer_write(buffregn2, dtype=dtype)
             rxbuff.advance_read_index(nframes)
+
+            sleeptime = (chunksize - rxbuff.read_available) / stream.samplerate
+            if sleeptime > 0:
+                _time.sleep(sleeptime)
 
     # Default handler for reading input from a SoundFile object and writing it
     # to a BufferedStream
@@ -1012,11 +1022,15 @@ format: please specify subtype'''.format(oformat))
         else:
             dtype = stream.dtype
 
-        dt = len(txbuff) / stream.samplerate / 8
+        chunksize = 8192
+        sleeptime = (chunksize - txbuff.write_available) / stream.samplerate
+        if sleeptime > 0:
+            _time.sleep(sleeptime)
         while not stream.finished:
             nframes = txbuff.write_available
             if not nframes:
-                stream.wait(dt)
+                stream._wmisses += 1
+                stream.wait(0.0025)
                 continue
 
             nframes, buffregn1, buffregn2 = txbuff.get_write_buffers(nframes)
@@ -1027,6 +1041,9 @@ format: please specify subtype'''.format(oformat))
 
             # exit if we've reached end of file
             if readframes < nframes: break
+            sleeptime = (chunksize - txbuff.write_available) / stream.samplerate
+            if sleeptime > 0:
+                _time.sleep(sleeptime)
 
     def close(self):
         try:
@@ -1319,24 +1336,23 @@ def _main(argv=None):
     if stream.out_fh is None:
         nullout = 'n/a'
 
-    try:
+    with stream:
         try:
-            with stream:
-                stream.start()
-                t1 = _time.time()
-                while stream.active:
-                    _time.sleep(0.15)
-                    line = statline.format(_time.time() - t1, stream.frame_count,
-                                           nullinp
-                                           or str(stream.txbuff.write_available),
-                                           nullout
-                                           or str(stream.rxbuff.read_available),
-                                           stream.xruns, 100 * stream.cpu_load)
-                    _sys.stdout.write(line); _sys.stdout.flush()
+            stream.start()
+            t1 = _time.time()
+            while stream.active:
+                _time.sleep(0.15)
+                line = statline.format(_time.time() - t1, stream.frame_count,
+                                       nullinp
+                                       or str(stream.txbuff.write_available),
+                                       nullout
+                                       or str(stream.rxbuff.read_available),
+                                       stream.xruns, 100 * stream.cpu_load)
+                _sys.stdout.write(line); _sys.stdout.flush()
+        except KeyboardInterrupt:
+            stream.stop()
         finally:
             print()
-    except KeyboardInterrupt:
-        pass
 
     print("Callback info:")
     print("\tFrames processed: %d ( %7.3fs )"
