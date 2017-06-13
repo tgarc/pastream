@@ -30,7 +30,7 @@ script:
   - cibuildwheel --output-dir wheelhouse
   - pip install twine
   - |
-    if [[ $TRAVIS_BRANCH = master ]]; then
+    if [[ $TRAVIS_TAG = *rc* ]]; then
         twine upload wheelhouse/*.whl --repository-url https://testpypi.python.org/pypi --skip-existing
     elif [[ $TRAVIS_TAG ]]; then
         twine upload wheelhouse/*.whl --skip-existing
@@ -49,10 +49,10 @@ deploy:
   - <<: *base_deploy
     server: https://testpypi.python.org/pypi
     on:
-      condition: $TRAVIS_OS_NAME = linux
-      branch: master
+      condition: $TRAVIS_OS_NAME = linux && $TRAVIS_TAG = *rc*
+      tags: true
   # release deploy
   - <<: *base_deploy
     on:
-      condition: $TRAVIS_OS_NAME = linux
+      condition: $TRAVIS_OS_NAME = linux && $TRAVIS_TAG != *rc*
       tags: true

@@ -19,13 +19,13 @@ build_script:
 
 deploy_script:
   - ps: |
-      python -m pip install twine
       if ($env:APPVEYOR_REPO_TAG -eq "true") {
-          python -m twine upload (resolve-path wheelhouse\*.whl) --skip-existing
+          python -m pip install twine
+          if ($env:APPVEYOR_REPO_TAG_NAME.Contains("rc")) {
+              $env:TWINE_REPOSITORY_URL = "https://testpypi.python.org/pypi"
+          }
       }
-      elseif ($env:APPVEYOR_REPO_BRANCH -eq "master") {
-          python -m twine upload (resolve-path wheelhouse\*.whl) --skip-existing --repository-url "https://testpypi.python.org/pypi"
-      }
+  - cmd: IF "%APPVEYOR_REPO_TAG%"=="true" python -m twine upload wheelhouse\*.whl --skip-existing
 
 artifacts:
   - path: "wheelhouse\\*.whl"

@@ -5,7 +5,7 @@
     :target: https://ci.appveyor.com/project/tgarc/pastream/branch/master
 
 
-pastream Portaudio Streams for Python
+pastream - Portaudio Streams for Python
 =======================================
 `pastream` builds on top of `portaudio <http://www.portaudio.com/>`__ and the
 excellent `sounddevice <http://github.com/spatialaudio/python-sounddevice>`__
@@ -57,17 +57,26 @@ Dependencies
 
 Installation
 ------------
-For linux platforms a recent version of the PortAudio and libsndfile C
-libraries are required. (For Windows or OSX, the sounddevice and soundfile
-packages include prebuilt version for you). You can either install the latest
-available from your package manager (libportaudio2 libsndfile for
-debian/raspbian) or install the latest stable build from the package websites
-(Recommended; see links in `Dependencies`_).
+For linux platforms a recent version of the ``PortAudio`` and ``libsndfile`` C
+libraries are required. (For Windows and OSX, the sounddevice and soundfile
+packages include prebuilt versions for you). You can either install the latest
+available from your package manager (e.g. ``apt-get install libportaudio2
+libsndfile`` for debian/raspbian) or install the latest stable build from the
+package website (Recommended); see links in `Dependencies`_.
 
-pastream is now available on pypi. Installation is as easy as::
+pastream is now available on PyPI. Installation is as easy as::
 
     $ pip install pastream
 
+
+Building From Source
+--------------------
+To compile from source under unix platforms, ``libffi`` is required. (For
+Windows, this is already included with ``cffi``). ``libffi`` is available
+through most package managers (e.g., ``yum install libffi-devel``, ``apt-get
+install libffi-dev``, ``brew install libffi``). More information on installing
+``libffi`` is available `here
+<https://cffi.readthedocs.io/en/latest/installation.html#platform-specific-instructions>`__.
 
 Building Source
 ---------------
@@ -79,7 +88,7 @@ If you already have a checkout::
 
     $ git submodule update --init
 
-Then do a pip install::
+Then do a pip install from your working copy::
 
     $ pip install <path/to/checkout>
 
