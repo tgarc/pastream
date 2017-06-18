@@ -5,18 +5,18 @@
 
 void init_stream(
     Py_PaBufferedStream *stream, 
-    int keep_alive, 
     PaStreamCallbackFlags abort_on_xrun, 
-    unsigned long nframes,
-    unsigned long padding,
+    long nframes,
+    long pad,
     unsigned long offset,
     PaUtilRingBuffer *rxbuff,
     PaUtilRingBuffer *txbuff) 
 {
-    stream->keep_alive = keep_alive;
     stream->abort_on_xrun = abort_on_xrun;
-    stream->nframes = nframes ? (nframes + padding) : 0;
-    stream->padding = padding;
+    stream->nframes = (nframes > 0 && pad > 0) ? (nframes + pad) : nframes;
+    // technically if nframes < 0 padding has no meaning, but set it anyways to
+    // give the user the least unexpected behavior
+    stream->pad = pad;
     stream->offset = offset;
     stream->rxbuff = rxbuff;
     stream->txbuff = txbuff;
@@ -28,7 +28,6 @@ void reset_stream(Py_PaBufferedStream *stream) {
     stream->last_callback = paContinue;
     stream->status = 0;
     stream->frame_count = 0;
-    stream->call_count = 0;
     stream->errorMsg[0] = '\0';
     stream->xruns = 0;
     stream->inputUnderflows = 0;
@@ -51,8 +50,8 @@ int callback(
     unsigned long frames_left = frame_count, offset = 0;
     ring_buffer_size_t oframes, iframes;
     Py_PaBufferedStream *stream = (Py_PaBufferedStream *) user_data;
+    long nframes = stream->nframes, pad = stream->pad;
 
-    ++stream->call_count;
     if ( status & 0xF ) {
         stream->status |= status;
         stream->xruns++;
@@ -64,58 +63,51 @@ int callback(
             stream->outputUnderflows++;
         if ( status & paOutputOverflow )
             stream->outputOverflows++;
-        if (status & stream->abort_on_xrun) {
+        if ( status & stream->abort_on_xrun ) {
             strcpy(stream->errorMsg, "XRunError");
-            return stream->last_callback = paAbort;
+            return (stream->last_callback = paAbort);
         }
     }
 
-    /* if ( stream->paused ) { */
-    /*     if (stream->txbuff != NULL) { */
-    /*         memset(out_data, 0, frame_count*stream->txbuff->elementSizeBytes); */
-    /*     } */
-    /*     stream->lastTime = timeInfo->currentTime; */
-    /*     return stream->last_callback = paContinue; */
-    /* } */
-
-    // exit point (1) We've surpassed nframes: this is our last callback
-    if ( stream->nframes && stream->frame_count + frames_left >= stream->nframes ) {
-        frames_left = stream->nframes - stream->frame_count;
+    // exit point (1 of 2)
+    // We've surpassed nframes: this is our last callback
+    if ( nframes > 0 && stream->frame_count + frames_left >= nframes ) {
+        frames_left = nframes - stream->frame_count;
         stream->last_callback = paComplete;
     }
 
-    if (stream->txbuff != NULL) {
+    if ( stream->txbuff != NULL ) {
         oframes = PaUtil_ReadRingBuffer(stream->txbuff, out_data, frames_left);
 
         // We're done reading frames! Or the writer was too slow; either way,
         // finish up by adding some zero padding.
-        if (oframes < frames_left) {
+        if ( oframes < frames_left ) {
             // Fill the remainder of the output buffer with zeros
             memset((unsigned char *) out_data + oframes*stream->txbuff->elementSizeBytes,
                    0, 
                    (frame_count - oframes)*stream->txbuff->elementSizeBytes);
 
-            if ( stream->keep_alive ) {
-                ; // pass
-            }
-            else if ( !stream->nframes ) {
+            if ( nframes == 0 ) {
                 // Figure out how much additional padding to insert and set nframes
                 // equal to it
                 stream->__nframesIsUnset = 1;
-                stream->nframes = stream->frame_count + oframes + stream->padding;
-                // exit point (2) We don't want to do an unncessary callback; end here
-                if ( stream->frame_count + frames_left >= stream->nframes ) {
-                    if ( stream->frame_count < stream->nframes )
-                        frames_left = stream->nframes - stream->frame_count;
+                stream->nframes = stream->frame_count + oframes \
+                    + (pad > 0 ? pad : 0);
+
+                // exit point (2 of 2)
+                // We don't want to do an unncessary callback; end here
+                if ( stream->frame_count + frames_left >= nframes ) {
+                    if ( stream->frame_count <= nframes )
+                        frames_left = nframes - stream->frame_count;
                     else
                         frames_left = 0;
                     stream->last_callback = paComplete;
                 }
             }
-            else if ( !stream->__nframesIsUnset ) {
+            else if ( !stream->__nframesIsUnset && nframes > 0 && pad >= 0 ) {
                 strcpy(stream->errorMsg, "TransmitBufferEmpty");
                 stream->frame_count += oframes;
-                return stream->last_callback = paAbort;
+                return (stream->last_callback = paAbort);
             }
         }
     }
@@ -128,10 +120,10 @@ int callback(
         }
 
         iframes = PaUtil_WriteRingBuffer(stream->rxbuff, (const void *) in_data, frames_left);
-        if ( iframes < frames_left && !stream->keep_alive ) {
+        if ( iframes < frames_left && nframes >= 0 ) {
             strcpy(stream->errorMsg, "ReceiveBufferFull");
             stream->frame_count += iframes;
-            return stream->last_callback = paAbort;
+            return (stream->last_callback = paAbort);
         }
     }
 

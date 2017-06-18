@@ -293,18 +293,9 @@ class RingBuffer(object):
 # TODO: add option to do asynchronous exception raising
 class _BufferedStreamBase(_sd._StreamBase):
     """
-    This class adds a RingBuffer for reading and writing audio
+    This class uses a RingBuffer for reading and writing audio
     data. This double buffers the audio data so that any processing is
     kept out of the time sensitive audio callback function.
-
-    Notes:
-
-    If the receive buffer fills during a callback the audio stream is
-    aborted and an exception is raised.
-
-    During playback, the end of the stream is signaled by an item on
-    the queue that is smaller than blocksize*channels*samplesize
-    bytes.
 
     This class adds the ability to register functions (`reader`,
     `writer`) for reading and writing audio data which run in their own
@@ -316,18 +307,24 @@ class _BufferedStreamBase(_sd._StreamBase):
     Parameters
     -----------
     nframes : int, optional
-        Number of frames to play/record. (0 means unlimited). This does *not*
-        include the length of any additional padding.
-    padding : int, optional
-        Number of zero frames to pad the output with. This has no effect on the
-        input.
+        If > 0, this sets the number of frames to play/record. (Note: This does
+        *not* include the length of any additional padding). If == 0 (default),
+        stream will complete when the send buffer is empty or abort if the
+        receive buffer overflows. If < 0, stream will continue indefinitely
+        inserting zeros to the playback as needed, and dropping any overflow
+        frames.
+    pad : int or bool, optional
+        If > 0, number of zero frames to pad the playback with. If pad ==
+        ``True`` or less than 0 and ``nframes`` > 0 output will automatically
+        be zero padded to have a length of ``nframes``. This has no effect on
+        recordings.
     offset : int, optional
-        Number of frames to discard from beginning of input. This has no effect
-        on the output.
+        Number of frames to discard from beginning of recording. This has no
+        effect on playback.
     buffersize : int, optional
         Transmit/receive buffer size in units of frames. Increase for smaller
         blocksizes.
-    reader, writer : function or None, optional
+    reader, writer : function, optional
         Buffer reader and writer functions to be run in a separate thread.
     raise_on_xruns : int or bool, optional
         Abort the stream on a particular xrun condition and raise an XRunError
@@ -335,8 +332,8 @@ class _BufferedStreamBase(_sd._StreamBase):
         pa{Input,Output}{Overflow,Underflow} or True (which indicates any xrun
         condition).
     blocksize : int, optional
-        Portaudio buffer size. If None or 0, the Portaudio backend will
-        automatically determine a size.
+        Portaudio buffer size. If None or 0 (recommended), the Portaudio
+        backend will automatically determine a size.
 
     Other Parameters
     ----------------
@@ -352,10 +349,9 @@ class _BufferedStreamBase(_sd._StreamBase):
     """
 
     def __init__(self, kind, device=None, samplerate=None, channels=None,
-                 dtype=None, nframes=0, padding=0, offset=0,
+                 dtype=None, nframes=0, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
-                 keep_alive=False, raise_on_xruns=False, blocksize=None,
-                 **kwargs):
+                 raise_on_xruns=False, blocksize=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
         # the stream in order to be able to pass our user_data
         self.txbuff = self.rxbuff = None
@@ -391,8 +387,8 @@ class _BufferedStreamBase(_sd._StreamBase):
 
             # Init the C BufferedStream object
             if raise_on_xruns is True: raise_on_xruns = 0xF
-            _lib.init_stream(self._cstream, int(keep_alive),
-                int(raise_on_xruns), nframes, padding, offset,
+            _lib.init_stream(self._cstream, int(raise_on_xruns),
+                self.__nframes, -1 if pad is True else int(pad), offset,
                 _ffi.NULL, _ffi.NULL)
 
             # Cast our ring buffers for use in C
@@ -463,14 +459,13 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._rmisses = self._wmisses = 0
 
     def __stopiothreads(self):
+        # !This function is *not* thread safe!
         currthread = _threading.current_thread()
-        if (self._rxthread is not None
-            and self._rxthread.is_alive()
-                and self._rxthread != currthread):
+        if (self._rxthread is not None and self._rxthread.is_alive()
+            and self._rxthread != currthread):
             self._rxthread.join()
-        if (self._txthread is not None
-            and self._txthread.is_alive()
-                and self._txthread != currthread):
+        if (self._txthread is not None and self._txthread.is_alive()
+            and self._txthread != currthread):
             self._txthread.join()
 
     def _readwritewrapper(self, buff, rwfunc):
@@ -581,36 +576,32 @@ class _BufferedStreamBase(_sd._StreamBase):
         return self._cstream.frame_count
 
     @property
-    def padding(self):
-        """\
-        Number of frames of padding that will be added to the input
-        stream.
-        """
-        return self._cstream.padding
-
-    @padding.setter
-    def padding(self, value):
-        # Note that the py_pastream callback doesn't act on `padding` unless
-        # nframes == 0; thus, set `nframes` first to get deterministic
+    def pad(self):
+        return self._cstream.pad
+    
+    @pad.setter
+    def pad(self, value):
+        # !Setting this value is *not* thread safe! 
+        # Note that the py_pastream callback doesn't act on 'pad' unless
+        # nframes == 0; thus, set 'nframes' first to get deterministic
         # behavior.
-        if self.__nframes:
+        value = -1 if value is True else int(value)
+        if self.__nframes > 0 and value > 0:
             self.__nframes = self._cstream.nframes = value + self.__nframes
-        self._cstream.padding = value
+        self._cstream.pad = value
 
     @property
     def nframes(self):
-        """\
-        Total number of frames to be processed by the stream. A value of zero
-        means no limit.
-        """
         # We fib a bit here: __nframes != _cstream.nframes. The former doesn't
         # include any padding.
         return self.__nframes
 
     @nframes.setter
     def nframes(self, value):
+        # !Setting this value is *not* thread safe!
         # Set nframes in an atomic manner
-        self._cstream.nframes = value + self._cstream.padding if value else 0
+        self._cstream.nframes = value + self._cstream.pad \
+            if value > 0 and self._cstream.pad > 0 else value
         self.__nframes = value
 
     def __enter__(self):
@@ -633,9 +624,8 @@ class _BufferedStreamBase(_sd._StreamBase):
         with self.__streamlock:
             self.__aborting = False
 
-        # Reset c stream info
+        # Reset cstream info
         _lib.reset_stream(self._cstream)
-        self.nframes = self.__nframes
 
         # Clear any rx buffer data still leftover
         if self.rxbuff is not None:
@@ -675,8 +665,9 @@ class _BufferedStreamBase(_sd._StreamBase):
         self._reraise_exceptions()
 
     def close(self):
-        # we take special care here to abort the stream first so that it is
-        # still valid for the lifetime of the read/write threads
+        # we take special care here to abort the stream first so that the
+        # pastream pointer is still valid for the lifetime of the read/write
+        # threads
         if not self.finished:
             with self.__streamlock:
                 self.__aborting = True
@@ -970,8 +961,8 @@ class _SoundFileStreamBase(_BufferedStreamBase):
                     osubtype = subtype
                 else:
                     raise ValueError('''\
-Could not determine an appropriate default subtype for '{0}' output file
-format: please specify subtype'''.format(oformat))
+Could not determine an appropriate default subtype for '{0}' output file format\
+: Please specify subtype'''.format(oformat))
             self.out_fh = _sf.SoundFile(self._outf, 'w', int(self.samplerate),
                               channels, osubtype, oendian, oformat)
         else:
@@ -1219,13 +1210,12 @@ Cross platform audio playback and capture.''')
         elif x.endswith('m'): x = int(float(x[:-1]) * 1e6)
         elif x.endswith('M'): x = int(float(x[:-1]) * 1024 * 1024)
         else:                 x = int(x)
-        assert x > 0, "Must be a positive value."
         return x
 
-    def posint(intarg):
-        intarg = int(intarg)
-        assert intarg > 0, "Must be a positive value."
-        return intarg
+    def possizetype(x):
+        x = sizetype(x)
+        assert x > 0, "Must be a positive value."
+        return x
 
     parser.add_argument("input", type=lambda x: None if x == 'null' else x,
         help='''\
@@ -1246,19 +1236,21 @@ single dash '-' may be used to write to STDOUT.''')
     parser.add_argument("-l", action=ListStreamsAction, nargs=0,
         help="List available audio device streams.")
 
-    parser.add_argument("-q", "--buffersize", type=sizetype,
-                        default=_PA_BUFFERSIZE, help='''\
+    parser.add_argument("-q", "--buffersize", type=possizetype,
+        default=_PA_BUFFERSIZE, help='''\
 File buffering size (in units of frames). Must be a power of
 2. Determines the maximum amount of buffering for the input/output
 file(s). Use higher values to increase robustness against irregular
 file i/o behavior. Add a 'K' or 'M' suffix to specify size in kibi or
 mebi respectively. (Default 0x%(default)x)''')
 
-    parser.add_argument("-p", "--pad", type=sizetype, default=0, help='''\
-Pad the input with frames of zeros. Useful to avoid truncating full duplex
-recording.''')
+    parser.add_argument("-p", "--pad", type=sizetype, nargs='?', default=0,
+        const=True, help='''\
+Pad the input with frames of zeros. (Useful to avoid truncating full duplex
+recording). If no argument is specified then padding will be chosen so that
+playback will be exactly --nframes. ''')
 
-    parser.add_argument("-o", "--offset", type=sizetype, default=0, help='''\
+    parser.add_argument("-o", "--offset", type=possizetype, default=0, help='''\
 Drop a number of frames from the start of a recording.''')
 
     parser.add_argument("-n", "--nframes", type=sizetype, default=0, help='''\
@@ -1271,7 +1263,7 @@ Limit playback/capture to this many frames.''')
 Audio device name expression or index number. Defaults to the
 PortAudio default device.''')
 
-    devopts.add_argument("-b", "--blocksize", type=posint, help='''\
+    devopts.add_argument("-b", "--blocksize", type=possizetype, help='''\
 PortAudio buffer size in units of frames. If zero or not specified, backend
 will decide an optimal size.''')
 
@@ -1318,7 +1310,7 @@ def _main(argv=None):
                         samplerate=args.samplerate,
                         blocksize=args.blocksize,
                         buffersize=args.buffersize,
-                        nframes=args.nframes, padding=args.pad,
+                        nframes=args.nframes, pad=args.pad,
                         offset=args.offset, endian=args.endian,
                         subtype=args.encoding, format=args.file_type,
                         device=args.device, channels=args.channels,
@@ -1361,7 +1353,6 @@ def _main(argv=None):
 \txruns (under/over): input {0.inputUnderflows}/{0.inputOverflows}
 \txruns (under/over): output {0.outputUnderflows}/{0.outputOverflows}'''
           .format(stream._cstream))
-    print("\tCallback serviced %d times" % stream._cstream.call_count)
     print("\tWrite/read misses: %d/%d" % (stream._wmisses, stream._rmisses))
 
     return 0

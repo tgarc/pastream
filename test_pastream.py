@@ -105,7 +105,7 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
                     mindices = np.where(matches)[0]
                     nframes += mindices[0]
                     delay = nframes
-                    if compensate_delay: stream.padding = delay
+                    if compensate_delay: stream.pad = delay
                     outframes = outframes[mindices[0]:]
 
             if found_delay:
