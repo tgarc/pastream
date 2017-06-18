@@ -3,14 +3,14 @@
 
 typedef struct Py_PaBufferedStream {
     PaStreamCallbackFlags status;
-    PaStreamCallbackFlags abort_on_xrun;
+    PaStreamCallbackFlags allow_xruns;
+    unsigned char allow_drops;    // Allow dropping of rxbuff frames
     PaStreamCallbackTimeInfo* lastTime;
     int last_callback;
-    int __nframesIsUnset;         // Internal only
-    long nframes;                 // Number of frames to play/record
-                                  // (0 means play until empty, -1 means play/rec indefinitely)
+    int __framesIsUnset;          // Internal use only
+    unsigned long frames;         // Number of frames to play/record (0 means play until empty)
     long pad;                     // Number of zero frames to pad the playback with
-                                  // (< 0 means to pad playback to match nframes)
+                                  // (< 0 means to pad playback whenever buffer is empty)
     unsigned long xruns;
     unsigned long inputOverflows, inputUnderflows;
     unsigned long outputOverflows, outputUnderflows;
@@ -24,8 +24,9 @@ typedef struct Py_PaBufferedStream {
 // call once for initialization
 void init_stream(
     Py_PaBufferedStream *stream, 
-    PaStreamCallbackFlags abort_on_xrun, 
-    long nframes,
+    PaStreamCallbackFlags allow_xruns, 
+    unsigned char allow_drops,
+    unsigned long frames,
     long pad,
     unsigned long offset,
     PaUtilRingBuffer *rxbuff,

@@ -90,7 +90,7 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
         delay = -1
         found_delay = False
         unsigned_dtype = 'u%d'%stream.samplesize[1]
-        nframes = mframes = 0
+        frames = mframes = 0
         inframes = np.zeros((len(stream.rxbuff), stream.channels[1]), dtype=stream.dtype[1])
         t = looptime = 0
         for i, outframes in enumerate(stream.chunks(chunksize, always_2d=True), start=1):
@@ -103,8 +103,8 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
                 if np.any(matches): 
                     found_delay = True
                     mindices = np.where(matches)[0]
-                    nframes += mindices[0]
-                    delay = nframes
+                    frames += mindices[0]
+                    delay = frames
                     if compensate_delay: stream.pad = delay
                     outframes = outframes[mindices[0]:]
 
@@ -114,10 +114,10 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
                 out = outframes[:readframes].view(unsigned_dtype)
                 npt.assert_array_equal(inp, out, "Loopback data mismatch")
                 mframes += readframes
-            nframes += len(outframes)
+            frames += len(outframes)
         assert delay != -1, "Preamble not found or was corrupted"
 
-    stats = mframes, nframes, delay, len(inpf2) - inpf2.tell(), looptime / i, stream._rmisses
+    stats = mframes, frames, delay, len(inpf2) - inpf2.tell(), looptime / i, stream._rmisses
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %f interlooptime; %d misses" 
           % stats)
     return stats
@@ -199,22 +199,25 @@ def test_soundfilestream_loopback(random_soundfile_input, devargs):
     with sf.SoundFile(outf) as out_fh:
         assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype)
 
-def test_pad_offset_nframes(random_soundfile_input, devargs):
+def test_offset(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
-
-    # If we compensate for the delay we should have no frames truncated
-    mframes, nframes, delay, ntrunc = assert_chunks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
-    assert ntrunc == 0
 
     # Using offset only should drop 'offset' frames from the recording
     offset = 8 # use a minimal offset so we don't drop the original input frames
-    mframes, nframes = assert_chunks_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
-    assert nframes == (len(inp_fh) - offset)
+    mframes, frames = assert_chunks_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
+    assert frames == (len(inp_fh) - offset)
 
-    # If we offset and pad the recording using a known fixed delay we should
-    # have an *exact* match
-    mframes, nframes, delay = assert_chunks_equal(inp_fh, preamble, dtype=dtype, nframes=8192)[:3]
-    assert nframes == 8192
+def test_frames(random_soundfile_input, devargs):
+    inp_fh, preamble, dtype = random_soundfile_input
+    mframes, frames, delay = assert_chunks_equal(inp_fh, preamble, dtype=dtype, frames=8192)[:3]
+    assert frames == 8192
+
+def test_pad(random_soundfile_input, devargs):
+    inp_fh, preamble, dtype = random_soundfile_input
+
+    # If we compensate for the delay we should have no frames truncated
+    mframes, frames, delay, ntrunc = assert_chunks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
+    assert ntrunc == 0
  
 def test_stream_replay(devargs):   
     with ps.BufferedStream(buffersize=65536, **devargs) as stream:
@@ -284,8 +287,8 @@ def test_threaded_read_deferred_exception_handling(devargs):
             assert stream.wait(0.5), "Timed out!"
     assert str(excinfo.value) == rxmsg
 
-def test_nframes_raises_underflow(devargs):
-    stream = ps.BufferedStream(buffersize=8192, nframes=9000, **devargs)
+def test_frames_raises_underflow(devargs):
+    stream = ps.BufferedStream(buffersize=8192, frames=9000, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(ps.TransmitBufferEmpty) as excinfo:
         with stream:

@@ -306,18 +306,14 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     Parameters
     -----------
-    nframes : int, optional
+    frames : int, optional
         If > 0, this sets the number of frames to play/record. (Note: This does
         *not* include the length of any additional padding). If == 0 (default),
-        stream will complete when the send buffer is empty or abort if the
-        receive buffer overflows. If < 0, stream will continue indefinitely
-        inserting zeros to the playback as needed, and dropping any overflow
-        frames.
+        stream will complete when the send buffer is empty.
     pad : int or bool, optional
-        If > 0, number of zero frames to pad the playback with. If pad ==
-        ``True`` or less than 0 and ``nframes`` > 0 output will automatically
-        be zero padded to have a length of ``nframes``. This has no effect on
-        recordings.
+        If > 0, number of zero frames to pad the playback with. If True or < 0,
+        output will automatically be zero padded whenever the transmit buffer
+        is empty. This has no effect on recordings.
     offset : int, optional
         Number of frames to discard from beginning of recording. This has no
         effect on playback.
@@ -326,11 +322,15 @@ class _BufferedStreamBase(_sd._StreamBase):
         blocksizes.
     reader, writer : function, optional
         Buffer reader and writer functions to be run in a separate thread.
-    raise_on_xruns : int or bool, optional
-        Abort the stream on a particular xrun condition and raise an XRunError
-        exception. Accepts a combination of
-        pa{Input,Output}{Overflow,Underflow} or True (which indicates any xrun
-        condition).
+    allow_xruns : int or bool, optional
+        Allowable portaudio xrun conditions. If False (any xrun condition), or
+        some combination of pa{Input,Output}{Overflow,Underflow}, the stream
+        will be aborted and an ``XRunError`` raised whenever an offending xrun
+        condition is encountered.
+    allow_drops : bool, optional
+        Allow dropping of input frames when the receive buffer (``rxbuff``) is
+        full. Note that this option is independent of ``allow_xruns``; it is
+        not effected by any xrun conditions in the audio backend.
     blocksize : int, optional
         Portaudio buffer size. If None or 0 (recommended), the Portaudio
         backend will automatically determine a size.
@@ -349,9 +349,9 @@ class _BufferedStreamBase(_sd._StreamBase):
     """
 
     def __init__(self, kind, device=None, samplerate=None, channels=None,
-                 dtype=None, nframes=0, pad=0, offset=0,
+                 dtype=None, frames=0, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
-                 raise_on_xruns=False, blocksize=None, **kwargs):
+                 allow_xruns=True, allow_drops=False, blocksize=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
         # the stream in order to be able to pass our user_data
         self.txbuff = self.rxbuff = None
@@ -376,7 +376,7 @@ class _BufferedStreamBase(_sd._StreamBase):
 
         # Set up the C portaudio callback
         self._cstream = _ffi.NULL
-        self.__nframes = nframes
+        self.__frames = frames
         self.__weakref = _weakref.WeakKeyDictionary()
         if kwargs.get('callback', None) is None:
             # Create the C BufferedStream object
@@ -386,9 +386,9 @@ class _BufferedStreamBase(_sd._StreamBase):
             self.__weakref[self._cstream] = lastTime
 
             # Init the C BufferedStream object
-            if raise_on_xruns is True: raise_on_xruns = 0xF
-            _lib.init_stream(self._cstream, int(raise_on_xruns),
-                self.__nframes, -1 if pad is True else int(pad), offset,
+            if allow_xruns is True: allow_xruns = 0xF
+            _lib.init_stream(self._cstream, int(allow_xruns), int(allow_drops),
+                self.__frames, -1 if pad is True else int(pad), offset,
                 _ffi.NULL, _ffi.NULL)
 
             # Cast our ring buffers for use in C
@@ -583,26 +583,26 @@ class _BufferedStreamBase(_sd._StreamBase):
     def pad(self, value):
         # !Setting this value is *not* thread safe! 
         # Note that the py_pastream callback doesn't act on 'pad' unless
-        # nframes == 0; thus, set 'nframes' first to get deterministic
+        # frames == 0; thus, set 'frames' first to get deterministic
         # behavior.
         value = -1 if value is True else int(value)
-        if self.__nframes > 0 and value > 0:
-            self.__nframes = self._cstream.nframes = value + self.__nframes
+        if self.__frames > 0 and value > 0:
+            self.__frames = self._cstream.frames = value + self.__frames
         self._cstream.pad = value
 
     @property
-    def nframes(self):
-        # We fib a bit here: __nframes != _cstream.nframes. The former doesn't
+    def frames(self):
+        # We fib a bit here: __frames != _cstream.frames. The former doesn't
         # include any padding.
-        return self.__nframes
+        return self.__frames
 
-    @nframes.setter
-    def nframes(self, value):
+    @frames.setter
+    def frames(self, value):
         # !Setting this value is *not* thread safe!
-        # Set nframes in an atomic manner
-        self._cstream.nframes = value + self._cstream.pad \
+        # Set frames in an atomic manner
+        self._cstream.frames = value + self._cstream.pad \
             if value > 0 and self._cstream.pad > 0 else value
-        self.__nframes = value
+        self.__frames = value
 
     def __enter__(self):
         return self
@@ -720,8 +720,8 @@ class _InputStreamMixin(object):
             Always returns blocks 2 dimensional arrays. Only valid if you have
             numpy installed.
         out : buffer object, optional
-            If you would like use your own buffer-implementing object
-            you can pass it here. Note this expects a single-byte
+            If you would like use your own buffer-implementing object you can
+            pass it here. Note this expects a buffer type with single-byte
             elements as would be provided by e.g., bytearray
 
         See Also
@@ -730,8 +730,8 @@ class _InputStreamMixin(object):
 
         Yields
         ------
-        array
-            ndarray or memoryview object with `chunksize` elements.
+        numpy.ndarray or memoryview
+            Buffer object with ``chunksize`` elements.
         """
         try:
             channels = self.channels[0]
@@ -766,10 +766,10 @@ class _InputStreamMixin(object):
             bytebuff = tempbuff = memoryview(bytearray(nbytes))
         else:
             if channels > 1: always_2d = True
-            if varsize: nframes = len(self.rxbuff)
-            else:       nframes = chunksize
-            tempbuff = _np.zeros((nframes, channels) if always_2d
-                                 else nframes * channels, dtype=dtype)
+            if varsize: frames = len(self.rxbuff)
+            else:       frames = chunksize
+            tempbuff = _np.zeros((frames, channels) if always_2d
+                                 else frames * channels, dtype=dtype)
             try:                   bytebuff = tempbuff.data.cast('B')
             except AttributeError: bytebuff = tempbuff.data
 
@@ -790,9 +790,9 @@ class _InputStreamMixin(object):
             while not (self.aborted or done):
                 # for thread safety, check the stream is active *before* reading
                 active = self.active
-                nframes = rxbuff.read_available
+                frames = rxbuff.read_available
                 lastTime = self._cstream.lastTime.currentTime
-                if nframes < minframes:
+                if frames < minframes:
                     if not wait_time:
                         wait_time = self.time
                     if not active:
@@ -808,34 +808,34 @@ class _InputStreamMixin(object):
                 # Debugging only
                 # print("{0:7.3f} {1:7.3f} {2:7.3f} {3:7.3f} {4} {5}".format(
                 #     1e3*(_time.time() - starttime), 1e3*sleeptime, 1e3*leadtime,
-                #     1e3*dt, self._rmisses - rmisses, nframes - incframes))
+                #     1e3*dt, self._rmisses - rmisses, frames - incframes))
                 rmisses = self._rmisses
                 starttime = _time.time()
 
-                nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(
-                    nframes if varsize else incframes)
+                frames, buffregn1, buffregn2 = rxbuff.get_read_buffers(
+                    frames if varsize else incframes)
 
                 if copy or len(buffregn2):
                     n2offset = boverlap + len(buffregn1)
                     bytebuff[boverlap:n2offset] = buffregn1
                     if len(buffregn2):
                         bytebuff[n2offset:n2offset + len(buffregn2)] = buffregn2
-                    rxbuff.advance_read_index(nframes)
+                    rxbuff.advance_read_index(frames)
                     if _np:
-                        yield tempbuff[:overlap + nframes]
+                        yield tempbuff[:overlap + frames]
                     else:
-                        yield bytebuff[:boverlap + nframes * rxbuff.elementsize]
+                        yield bytebuff[:boverlap + frames * rxbuff.elementsize]
                     if overlap:
                         bytebuff[:boverlap] = bytebuff[-boverlap:]
                 else:
                     if always_2d:
                         yield _np.frombuffer(buffregn1, dtype=dtype)\
-                                 .reshape(nframes, channels)
+                                 .reshape(frames, channels)
                     elif _np:
                         yield _np.frombuffer(buffregn1, dtype=dtype)
                     else:
                         yield buffregn1
-                    rxbuff.advance_read_index(nframes)
+                    rxbuff.advance_read_index(frames)
 
                 dt = _time.time() - starttime  # DEBUG
 
@@ -984,9 +984,9 @@ Could not determine an appropriate default subtype for '{0}' output file format\
         while not stream.aborted:
             # for thread safety, check the stream is active *before* reading
             active = stream.active
-            nframes = rxbuff.read_available
+            frames = rxbuff.read_available
             lastTime = stream._cstream.lastTime.currentTime
-            if nframes == 0:
+            if frames == 0:
                 # we've read everything and the stream is done; seeya!
                 if not active: break
                 # we're reading too fast, wait for a buffer write
@@ -994,11 +994,11 @@ Could not determine an appropriate default subtype for '{0}' output file format\
                 _time.sleep(0.0025)
                 continue
 
-            nframes, buffregn1, buffregn2 = rxbuff.get_read_buffers(nframes)
+            frames, buffregn1, buffregn2 = rxbuff.get_read_buffers(frames)
             stream.out_fh.buffer_write(buffregn1, dtype=dtype)
             if len(buffregn2):
                 stream.out_fh.buffer_write(buffregn2, dtype=dtype)
-            rxbuff.advance_read_index(nframes)
+            rxbuff.advance_read_index(frames)
 
             sleeptime = (chunksize - rxbuff.read_available) / stream.samplerate
             if sleeptime > 0:
@@ -1018,20 +1018,20 @@ Could not determine an appropriate default subtype for '{0}' output file format\
         if sleeptime > 0:
             _time.sleep(sleeptime)
         while not stream.finished:
-            nframes = txbuff.write_available
-            if not nframes:
+            frames = txbuff.write_available
+            if not frames:
                 stream._wmisses += 1
                 stream.wait(0.0025)
                 continue
 
-            nframes, buffregn1, buffregn2 = txbuff.get_write_buffers(nframes)
+            frames, buffregn1, buffregn2 = txbuff.get_write_buffers(frames)
             readframes = stream.inp_fh.buffer_read_into(buffregn1, dtype=dtype)
             if len(buffregn2):
                 readframes += stream.inp_fh.buffer_read_into(buffregn2, dtype=dtype)
             txbuff.advance_write_index(readframes)
 
             # exit if we've reached end of file
-            if readframes < nframes: break
+            if readframes < frames: break
             sleeptime = (chunksize - txbuff.write_available) / stream.samplerate
             if sleeptime > 0:
                 _time.sleep(sleeptime)
@@ -1248,13 +1248,17 @@ mebi respectively. (Default 0x%(default)x)''')
         const=True, help='''\
 Pad the input with frames of zeros. (Useful to avoid truncating full duplex
 recording). If no argument is specified then padding will be chosen so that
-playback will be exactly --nframes. ''')
+playback will be exactly --frames. ''')
 
     parser.add_argument("-o", "--offset", type=possizetype, default=0, help='''\
 Drop a number of frames from the start of a recording.''')
 
-    parser.add_argument("-n", "--nframes", type=sizetype, default=0, help='''\
+    parser.add_argument("-n", "--frames", type=sizetype, default=0, help='''\
 Limit playback/capture to this many frames.''')
+
+#     parser.add_argument("-x", "--abort-on-xruns", type=bool, default=False,
+#         help='''\
+# Stop streaming if an xrun occurs.''')
 
     devopts = parser.add_argument_group("I/O device stream options")
 
@@ -1310,7 +1314,7 @@ def _main(argv=None):
                         samplerate=args.samplerate,
                         blocksize=args.blocksize,
                         buffersize=args.buffersize,
-                        nframes=args.nframes, pad=args.pad,
+                        frames=args.frames, pad=args.pad,
                         offset=args.offset, endian=args.endian,
                         subtype=args.encoding, format=args.file_type,
                         device=args.device, channels=args.channels,
@@ -1345,7 +1349,6 @@ def _main(argv=None):
             stream.stop()
         finally:
             print()
-
     print("Callback info:")
     print("\tFrames processed: %d ( %7.3fs )"
           % (stream.frame_count, stream.frame_count / float(stream.samplerate)))
