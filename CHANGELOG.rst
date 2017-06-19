@@ -1,6 +1,34 @@
 Changelog
 =========
 
+0.0.4
+-----
+- bugfix: chunks: overlap was (accidentally) not allowed if chunksize was
+  not non-zero. This should be allowed as long as stream.blocksize > 0.
+
+- chunks now supports passing a generic ndarray to ``out`` parameter (without
+  having to cast it to a bytes object)
+
+- ``nframes`` renamed to ``frames``
+
+- ``padding`` renamed to ``pad``
+
+- added ``allow_drops`` option to give user the option to ignore
+  ``ReceiveBufferEmpty`` error in more atypical use cases
+
+- ``raise_on_xruns`` changed to ``allow_xruns``; inverted behavior
+
+- got rid of undocumented ``keep_alive`` option; the combination of ``allow_drops`` and
+  ``pad`` can give the same functionality
+
+- ``--pad`` now can be specified without an argument which just sets pad to
+  True
+
+- added autopadding feature: Now if ``frames`` > 0 and ``pad`` == True or pad <
+  0, playback will be zero padded out to ``frames``. This is a nice feature for
+  the pastream application and SoundFileStream since sometimes you want to add
+  extra padding after the file playback.
+
 0.0.3
 -----
 - command line options for size parameters now accept k/K/m/M suffix
