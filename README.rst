@@ -78,8 +78,6 @@ install libffi-dev``, ``brew install libffi``). More information on installing
 ``libffi`` is available `here
 <https://cffi.readthedocs.io/en/latest/installation.html#platform-specific-instructions>`__.
 
-Building Source
----------------
 If doing a fresh checkout::
 
     $ git clone --recursive http://github.com/tgarc/pastream

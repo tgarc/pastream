@@ -521,10 +521,10 @@ class _BufferedStreamBase(_sd._StreamBase):
     @property
     def pad(self):
         return self._cstream.pad
-    
+
     @pad.setter
     def pad(self, value):
-        # !Setting this value is *not* thread safe! 
+        # !Setting this value is *not* thread safe!
         # Note that the py_pastream callback doesn't act on 'pad' unless
         # frames == 0; thus, set 'frames' first to get deterministic
         # behavior.
@@ -840,8 +840,9 @@ class BufferedStream(BufferedInputStream, BufferedOutputStream):
     -----------
     frames : int, optional
         If > 0, this sets the number of frames to play/record. (Note: This does
-        *not* include the length of any additional padding). If == 0 (default),
-        stream will complete when the send buffer is empty.
+        *not* include the length of any additional padding). If frames == 0
+        (the default), stream will complete when the send buffer is empty or,
+        for input-only streams, streaming will continue indefinitely.
     pad : int or bool, optional
         If > 0, number of zero frames to pad the playback with. If True or < 0,
         output will automatically be zero padded whenever the transmit buffer
@@ -1232,25 +1233,30 @@ single dash '-' may be used to write to STDOUT.''')
     parser.add_argument("-l", action=ListStreamsAction, nargs=0,
         help="List available audio device streams.")
 
-    parser.add_argument("-q", "--buffersize", type=possizetype,
+    parser.add_argument("--buffersize", type=possizetype,
         default=_PA_BUFFERSIZE, help='''\
-File buffering size (in units of frames). Must be a power of
-2. Determines the maximum amount of buffering for the input/output
-file(s). Use higher values to increase robustness against irregular
-file i/o behavior. Add a 'K' or 'M' suffix to specify size in kibi or
-mebi respectively. (Default 0x%(default)x)''')
+File buffering size (in units of frames). Must be a power of 2. Determines the
+maximum amount of buffering for the input/output file(s). Use higher values to
+increase robustness against irregular file i/o behavior. Add a 'K' or 'M'
+suffix to specify size in kibi or mebi units. (Default %(default)d)''')
 
     parser.add_argument("-p", "--pad", type=sizetype, nargs='?', default=0,
         const=True, help='''\
 Pad the input with frames of zeros. (Useful to avoid truncating full duplex
-recording). If no argument is specified then padding will be chosen so that
-playback will be exactly --frames. ''')
+recording). If no PAD argument is given or PAD is less than zero then padding
+is chosen so that playback will be exactly --frames.''')
 
     parser.add_argument("-o", "--offset", type=possizetype, default=0, help='''\
 Drop a number of frames from the start of a recording.''')
 
     parser.add_argument("-n", "--frames", type=sizetype, default=0, help='''\
-Limit playback/capture to this many frames.''')
+Limit playback/capture to this many frames. If FRAMES equals to zero (the
+default), then streaming will continue until there is no playback data
+remaining or, if no playback was given, recording will continue
+indefinitely.''')
+
+    parser.add_argument("-q", "--quiet", action='store_true', default=False,
+        help="Don't print any status information.")
 
 #     parser.add_argument("-x", "--abort-on-xruns", type=bool, default=False,
 #         help='''\
@@ -1316,17 +1322,19 @@ def _main(argv=None):
                         device=args.device, channels=args.channels,
                         dtype=args.dtype)
 
-    statline = "\r{:8.3f}s {:10d} frames processed, {:>8s} frames free, " \
-               "{:>8s} frames queued ({:d} xruns, {:f}% load)\r"
-    print("<--", stream.inp_fh if stream.inp_fh is not None else 'null')
-    print(["<->", "-->", "<--"][['duplex', 'input', 'output'].index(kind)], stream)
-    print("-->", stream.out_fh if stream.out_fh is not None else 'null')
-
     nullinp = nullout = None
     if stream.inp_fh is None:
         nullinp = 'n/a'
     if stream.out_fh is None:
         nullout = 'n/a'
+    elif stream.out_fh.name == '-' or args.quiet:
+        import os; _sys.stdout = open(os.devnull, 'w')
+
+    statline = "\r{:8.3f}s {:10d} frames processed, {:>8s} frames free, " \
+               "{:>8s} frames queued ({:d} xruns, {:f}% load)\r"
+    print("<--", stream.inp_fh if stream.inp_fh is not None else 'null')
+    print(["<->", "-->", "<--"][['duplex', 'input', 'output'].index(kind)], stream)
+    print("-->", stream.out_fh if stream.out_fh is not None else 'null')
 
     with stream:
         try:
