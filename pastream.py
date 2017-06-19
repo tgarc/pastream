@@ -290,64 +290,9 @@ class RingBuffer(object):
         return self._ptr.bufferSize
 
 
-# TODO: add option to do asynchronous exception raising
+# TODO?: add option to do asynchronous exception raising
 class _BufferedStreamBase(_sd._StreamBase):
-    """
-    This class uses a RingBuffer for reading and writing audio
-    data. This double buffers the audio data so that any processing is
-    kept out of the time sensitive audio callback function.
-
-    This class adds the ability to register functions (`reader`,
-    `writer`) for reading and writing audio data which run in their own
-    threads. However, the reader and writer threads are optional; this
-    allows the use of a 'duplex' stream which e.g. has a dedicated
-    thread for writing data but for which receive data is read directly
-    in the owning thread.
-
-    Parameters
-    -----------
-    frames : int, optional
-        If > 0, this sets the number of frames to play/record. (Note: This does
-        *not* include the length of any additional padding). If == 0 (default),
-        stream will complete when the send buffer is empty.
-    pad : int or bool, optional
-        If > 0, number of zero frames to pad the playback with. If True or < 0,
-        output will automatically be zero padded whenever the transmit buffer
-        is empty. This has no effect on recordings.
-    offset : int, optional
-        Number of frames to discard from beginning of recording. This has no
-        effect on playback.
-    buffersize : int, optional
-        Transmit/receive buffer size in units of frames. Increase for smaller
-        blocksizes.
-    reader, writer : function, optional
-        Buffer reader and writer functions to be run in a separate thread.
-    allow_xruns : int or bool, optional
-        Allowable portaudio xrun conditions. If False (any xrun condition), or
-        some combination of pa{Input,Output}{Overflow,Underflow}, the stream
-        will be aborted and an ``XRunError`` raised whenever an offending xrun
-        condition is encountered.
-    allow_drops : bool, optional
-        Allow dropping of input frames when the receive buffer (``rxbuff``) is
-        full. Note that this option is independent of ``allow_xruns``; it is
-        not effected by any xrun conditions in the audio backend.
-    blocksize : int, optional
-        Portaudio buffer size. If None or 0 (recommended), the Portaudio
-        backend will automatically determine a size.
-
-    Other Parameters
-    ----------------
-    kind, device, channels, dtype, **kwargs
-        Additional parameters to pass to ``sounddevice._StreamBase``.
-
-    Attributes
-    ----------
-    txbuff : Ringbuffer
-        RingBuffer used for writing audio data to the output Portaudio stream.
-    rxbuff : Ringbuffer
-        RingBuffer used for reading audio data from the input Portaudio stream.
-    """
-
+    # See BufferedStream for docstring
     def __init__(self, kind, device=None, samplerate=None, channels=None,
                  dtype=None, frames=0, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
@@ -495,9 +440,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         except _queue.Empty:
             return
 
-        # To simplify things, we only care about the first exception
-        # raised
-        # TODO: handle multiple deferred exceptions
+        # To simplify things, we only care about the first exception raised
         self.__exceptions.queue.clear()
 
         if isinstance(exc, tuple):
@@ -700,29 +643,28 @@ class _BufferedStreamBase(_sd._StreamBase):
 # Mix-in purely for adding chunks method
 class _InputStreamMixin(object):
 
-    # TODO: add buffer 'type' as an argument
-    # TODO: add fill_value option
     def chunks(self, chunksize=None, overlap=0, always_2d=False, out=None):
         """
-        Similar in concept to the PySoundFile library's `blocks`
-        method. Returns an iterator over buffered audio chunks read
-        from a Portaudio stream.
+        Similar in concept to PySoundFile library's `blocks` method. Returns an
+        iterator over buffered audio chunks read from a Portaudio stream.
 
         Parameters
         ----------
         chunksize : int, optional
-            Size of iterator chunks. If not specified, the estimated
-            stream input latency will be used to determine the chunk
-            size.
+            Size of iterator chunks. If not specified the stream blocksize will
+            be used. Note that if the blocksize is zero the yielded audio
+            chunks may be of variable length depending on the audio backend.
         overlap : int, optional
             Number of frames to overlap across blocks.
         always_2d : bool, optional
             Always returns blocks 2 dimensional arrays. Only valid if you have
             numpy installed.
-        out : buffer object, optional
-            If you would like use your own buffer-implementing object you can
-            pass it here. Note this expects a buffer type with single-byte
-            elements as would be provided by e.g., bytearray
+        out : numpy.ndarray or buffer object, optional
+            Alternative output buffer in which to store the result. Note that
+            any buffer object - with the exception of ``numpy.ndarray`` - is
+            expected to have single-byte elements as would be provided by e.g.,
+            ``bytearray``. ``bytes`` objects are not recommended as they may
+            incur extra copies.
 
         See Also
         --------
@@ -730,8 +672,10 @@ class _InputStreamMixin(object):
 
         Yields
         ------
-        numpy.ndarray or memoryview
-            Buffer object with ``chunksize`` elements.
+        numpy.ndarray, buffer
+            Buffer object with ``chunksize`` frames. If numpy is available
+            defaults to numpy.ndarray otherwise a buffer of bytes is yielded
+            (which is either a cffi.buffer object or a memoryview).
         """
         try:
             channels = self.channels[0]
@@ -749,22 +693,30 @@ class _InputStreamMixin(object):
             else:
                 varsize = True
                 chunksize = int(round(latency * self.samplerate))
-            if overlap:
+            if overlap and varsize:
                 raise ValueError(
-                    "Using overlap requires a fixed chunksize or stream blocksize")
+                    "Using overlap requires a non-zero chunksize or stream blocksize")
         if overlap >= chunksize:
             raise ValueError(
                 "Overlap must be less than chunksize or stream blocksize")
-        if always_2d and (_np is None or out is not None):
+        if always_2d and (_np is None or not isinstance(out, _np.ndarray)):
             raise ValueError("always_2d is only supported with numpy arrays")
 
+        numpy = False
         if out is not None:
-            bytebuff = tempbuff = out
+            tempbuff = out
+            if _np is not None and isinstance(out, _np.ndarray):
+                numpy = True
+                try:                   bytebuff = tempbuff.data.cast('B')
+                except AttributeError: bytebuff = tempbuff.data
+            else:
+                bytebuff = tempbuff
         elif _np is None:
             if varsize: nbytes = len(self.rxbuff) * self.rxbuff.elementsize
             else:       nbytes = chunksize * self.rxbuff.elementsize
             bytebuff = tempbuff = memoryview(bytearray(nbytes))
         else:
+            numpy = True
             if channels > 1: always_2d = True
             if varsize: frames = len(self.rxbuff)
             else:       frames = chunksize
@@ -821,7 +773,7 @@ class _InputStreamMixin(object):
                     if len(buffregn2):
                         bytebuff[n2offset:n2offset + len(buffregn2)] = buffregn2
                     rxbuff.advance_read_index(frames)
-                    if _np:
+                    if numpy:
                         yield tempbuff[:overlap + frames]
                     else:
                         yield bytebuff[:boverlap + frames * rxbuff.elementsize]
@@ -852,48 +804,88 @@ class _InputStreamMixin(object):
 
 
 class BufferedInputStream(_InputStreamMixin, _BufferedStreamBase):
+    """
+    Record only stream. See :class:`BufferedStream` for documentation of
+    parameters.
+    """
+
     def __init__(self, *args, **kwargs):
         super(BufferedInputStream, self).__init__('input', *args, **kwargs)
 
 
 class BufferedOutputStream(_BufferedStreamBase):
+    """
+    Playback only stream. See :class:`BufferedStream` for documentation of
+    parameters.
+    """
+
     def __init__(self, *args, **kwargs):
         super(BufferedOutputStream, self).__init__('output', *args, **kwargs)
 
 
 class BufferedStream(BufferedInputStream, BufferedOutputStream):
+    """
+    This class uses a RingBuffer for reading and writing audio
+    data. This double buffers the audio data so that any processing is
+    kept out of the time sensitive audio callback function.
+
+    This class adds the ability to register functions (`reader`,
+    `writer`) for reading and writing audio data which run in their own
+    threads. However, the reader and writer threads are optional; this
+    allows the use of a 'duplex' stream which e.g. has a dedicated
+    thread for writing data but for which receive data is read directly
+    in the owning thread.
+
+    Parameters
+    -----------
+    frames : int, optional
+        If > 0, this sets the number of frames to play/record. (Note: This does
+        *not* include the length of any additional padding). If == 0 (default),
+        stream will complete when the send buffer is empty.
+    pad : int or bool, optional
+        If > 0, number of zero frames to pad the playback with. If True or < 0,
+        output will automatically be zero padded whenever the transmit buffer
+        is empty. This has no effect on recordings.
+    offset : int, optional
+        Number of frames to discard from beginning of recording. This has no
+        effect on playback.
+    buffersize : int, optional
+        Transmit/receive buffer size in units of frames. Increase for smaller
+        blocksizes.
+    reader, writer : function, optional
+        Buffer reader and writer functions to be run in a separate thread.
+    allow_xruns : int or bool, optional
+        Allowable portaudio xrun conditions. If False (any xrun condition), or
+        some combination of pa{Input,Output}{Overflow,Underflow}, the stream
+        will be aborted and an ``XRunError`` raised whenever an offending xrun
+        condition is detected.
+    allow_drops : bool, optional
+        Allow dropping of input frames when the receive buffer (``rxbuff``) is
+        full. Note that this option is independent of ``allow_xruns``; it is
+        not effected by any xrun conditions in the audio backend.
+    blocksize : int, optional
+        Portaudio buffer size. If None or 0 (recommended), the Portaudio
+        backend will automatically determine a size.
+
+    Other Parameters
+    ----------------
+    kind, device, channels, dtype, **kwargs
+        Additional parameters to pass to ``sounddevice._StreamBase``.
+
+    Attributes
+    ----------
+    txbuff : Ringbuffer
+        RingBuffer used for writing audio data to the output Portaudio stream.
+    rxbuff : Ringbuffer
+        RingBuffer used for reading audio data from the input Portaudio stream.
+    """
+
     def __init__(self, *args, **kwargs):
         _BufferedStreamBase.__init__(self, 'duplex', *args, **kwargs)
 
 
 class _SoundFileStreamBase(_BufferedStreamBase):
-    """
-    Parameters
-    ----------
-    inpf : SoundFile compatible input
-        Input file to stream to audio device. The input file will determine the
-        samplerate and number of channels for the audio stream.
-    outf : SoundFile compatible input
-        Output file to capture data from audio device. If a SoundFile is not
-        passed, the output file parameters will be determined from the output
-        audio stream.
-
-    Attributes
-    ------------
-    inp_fh : SoundFile
-        The file object to write to the output ring buffer.
-    out_fh : SoundFile
-        The file object to capture data from the input ring buffer.
-
-    Other Parameters
-    ----------------------
-    format, subtype, endian
-        Parameters to pass to SoundFile constructor(s). Accepts pairs to allow
-        different parameters for input and output.
-    reader, writer, kind, blocksize, **kwargs
-        Additional parameters to pass to _BufferedStreamBase.
-    """
-
+    # See SoundFileStream for docstring
     def __init__(self, kind, inpf=None, outf=None, reader=None, writer=None,
                  format=None, subtype=None, endian=None, **kwargs):
         iformat, oformat = _sd._split(format)
@@ -1048,22 +1040,8 @@ Could not determine an appropriate default subtype for '{0}' output file format\
 
 class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
     """
-    Audio file recorder.
-
-    Parameters
-    -----------
-    outf : SoundFile compatible input
-        Output file to write captured audio data. If a SoundFile is not passed,
-        the output file parameters will be determined from the output audio
-        device stream.
-    format, subtype, endian
-        Arguments to pass to the SoundFile constructor when outf is not already
-        a SoundFile object.
-
-    Other Parameters
-    -----------------
-    **kwargs
-        Additional parameters to pass to SoundFileStreamBase.
+    Audio file recorder. See :class:`SoundFileStream` for explanation of
+    parameters.
     """
 
     def __init__(self, outf, **kwargs):
@@ -1073,14 +1051,8 @@ class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
 
 class SoundFileOutputStream(_SoundFileStreamBase):
     """
-    Audio file player.
-
-    Parameters
-    -----------
-    inpf : SoundFile compatible input
-        Input file to stream to audio device. Except in the case of a RAW file,
-        the audio file will determine the default ``samplerate`` and
-        ``channels`` for the output audio stream.
+    Audio file player. See :class:`SoundFileStream` for explanation of
+    parameters.
     """
 
     def __init__(self, inpf, buffersize=_PA_BUFFERSIZE, **kwargs):
@@ -1094,6 +1066,31 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
     is required. This allows you to e.g. use a SoundFile as input but
     implement your own reader and/or read from the buffer in the
     stream's owner thread.
+
+    Parameters
+    ----------
+    inpf : SoundFile compatible input
+        Input file to stream to audio device. The input file will determine the
+        samplerate and number of channels for the audio stream.
+    outf : SoundFile compatible input
+        Output file to capture data from audio device. If a SoundFile is not
+        passed, the output file parameters will be determined from the output
+        audio stream.
+
+    Attributes
+    ------------
+    inp_fh : SoundFile
+        The file object to write to the output ring buffer.
+    out_fh : SoundFile
+        The file object to capture data from the input ring buffer.
+
+    Other Parameters
+    ----------------------
+    format, subtype, endian
+        Parameters to pass to SoundFile constructor(s). Accepts pairs to allow
+        different parameters for input and output.
+    reader, writer, kind, blocksize, **kwargs
+        Additional parameters to pass to _BufferedStreamBase.
     """
 
     def __init__(self, inpf=None, outf=None, buffersize=_PA_BUFFERSIZE, **kwargs):
@@ -1105,9 +1102,8 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
         _SoundFileStreamBase.__init__(self, 'duplex', inpf=inpf, outf=outf,
             buffersize=buffersize, **kwargs)
 
+
 # TODO: add support for generic 'input' which accepts file, buffer, or ndarray
-
-
 def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
            streamclass=None, **kwargs):
     """

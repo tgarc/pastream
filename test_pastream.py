@@ -23,7 +23,7 @@ elif system == 'Darwin':
 else:
     # This is assuming you're using the ALSA device set up by etc/.asoundrc
     DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'channels':
-                      1, 'samplerate': 48000 }
+                      2, 'samplerate': 48000 }
 
 if 'SOUNDDEVICE_DEVICE_NAME' in os.environ:
     DEVICE_KWARGS['device'] = os.environ['SOUNDDEVICE_DEVICE_NAME']
@@ -79,7 +79,7 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
           % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
 
-def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None, **kwargs):
+def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None, outtype=None, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
@@ -92,14 +92,20 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
         unsigned_dtype = 'u%d'%stream.samplesize[1]
         frames = mframes = 0
         inframes = np.zeros((len(stream.rxbuff), stream.channels[1]), dtype=stream.dtype[1])
+        if outtype is not None:
+            out = outtype(len(stream.rxbuff) * stream.rxbuff.elementsize)
+        else:
+            out = None
         t = looptime = 0
-        for i, outframes in enumerate(stream.chunks(chunksize, always_2d=True), start=1):
+        for i, outframes in enumerate(stream.chunks(chunksize, out=out), start=1):
+            if outtype is not None:
+                outframes = np.frombuffer(outframes, dtype=stream.dtype[0]).reshape(-1, stream.channels[0])
             dt = 1e3*(time.time() - t)
             if i > 1: looptime += dt
             # print(dt, stream.rxbuff.read_available)
             t = time.time()
             if not found_delay:
-                matches = outframes[:, 0].view(unsigned_dtype) == preamble
+                matches = outframes.view(unsigned_dtype) == preamble
                 if np.any(matches): 
                     found_delay = True
                     mindices = np.where(matches)[0]
@@ -181,9 +187,13 @@ def random_soundfile_input(tmpdir, scope='session'):
 def devargs():
     return dict(DEVICE_KWARGS)
 
-def test_chunks_loopback(random_soundfile_input):
+def test_chunks_ndarray_loopback(random_soundfile_input):
     inp_fh, preamble, dtype = random_soundfile_input
     assert_chunks_equal(inp_fh, preamble, dtype=dtype)
+
+def test_chunks_bytearray_loopback(random_soundfile_input):
+    inp_fh, preamble, dtype = random_soundfile_input
+    assert_chunks_equal(inp_fh, preamble, dtype=dtype, outtype=bytearray)
 
 def test_soundfilestream_loopback(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
