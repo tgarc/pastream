@@ -645,8 +645,11 @@ class _InputStreamMixin(object):
 
     def chunks(self, chunksize=None, overlap=0, always_2d=False, out=None):
         """
-        Similar in concept to PySoundFile library's `blocks` method. Returns an
-        iterator over buffered audio chunks read from a Portaudio stream.
+        Similar in concept to PySoundFile library's `blocks` method. Returns
+        an iterator over buffered audio chunks read from a Portaudio stream.
+        By default a direct view into the stream's ringbuffer is returned
+        whenever possible. Setting an ``out`` buffer or a non-zero ``overlap``
+        will incur an extra copy.
 
         Parameters
         ----------
@@ -655,7 +658,9 @@ class _InputStreamMixin(object):
             be used. Note that if the blocksize is zero the yielded audio
             chunks may be of variable length depending on the audio backend.
         overlap : int, optional
-            Number of frames to overlap across blocks.
+            Number of frames to overlap across blocks. Note that enabling this
+            option requires that data be copied out from the stream's
+            ringbuffer either into ``out`` or a temporary buffer.
         always_2d : bool, optional
             Always returns blocks 2 dimensional arrays. Only valid if you have
             numpy installed.
@@ -663,8 +668,8 @@ class _InputStreamMixin(object):
             Alternative output buffer in which to store the result. Note that
             any buffer object - with the exception of ``numpy.ndarray`` - is
             expected to have single-byte elements as would be provided by e.g.,
-            ``bytearray``. ``bytes`` objects are not recommended as they may
-            incur extra copies.
+            ``bytearray``. ``bytes`` objects are not recommended as they will
+            incur extra copies (use ``bytearray`` instead).
 
         See Also
         --------
@@ -731,7 +736,7 @@ class _InputStreamMixin(object):
         boverlap = overlap * rxbuff.elementsize
         minframes = 1 if varsize else incframes
 
-        starttime = dt = rmisses = 0  # DEBUG
+        #starttime = dt = rmisses = 0  # DEBUG
         wait_time = leadtime = 0
         done = False
         self.start()
@@ -789,7 +794,7 @@ class _InputStreamMixin(object):
                         yield buffregn1
                     rxbuff.advance_read_index(frames)
 
-                dt = _time.time() - starttime  # DEBUG
+                # dt = _time.time() - starttime  # DEBUG
 
                 # lagtime = self.time - self._cstream.lastTime.currentTime
                 sleeptime = (incframes - rxbuff.read_available) / self.samplerate \

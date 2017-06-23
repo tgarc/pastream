@@ -111,13 +111,13 @@ Grab (real) frequency transformed live audio stream with 50% overlap:
 
    chunksize = 1024
    window = np.hanning(chunksize)
-   for l, x_l in ps.chunks(chunksize, overlap=chunksize//2, channels=1):
-       X_l = np.fft.rfft(x_l) * window
+   for l, x_l in enumerate(ps.chunks(chunksize, overlap=chunksize//2, channels=1)):
+       X_l = np.fft.rfft(x_l * window)
 
 See also the included examples under `pastream/examples`.
 
 
-Command Line Interface
+Command Line Application
 --------------------------------
 Once installed, the pastream application should be callable from your command
 line. If you're familiar with `sox <http://sox.sourceforge.net/>`__ you'll
