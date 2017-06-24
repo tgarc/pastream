@@ -294,7 +294,7 @@ class RingBuffer(object):
 class _BufferedStreamBase(_sd._StreamBase):
     # See BufferedStream for docstring
     def __init__(self, kind, device=None, samplerate=None, channels=None,
-                 dtype=None, frames=0, pad=0, offset=0,
+                 dtype=None, frames=-1, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
                  allow_xruns=True, allow_drops=False, blocksize=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
@@ -333,8 +333,7 @@ class _BufferedStreamBase(_sd._StreamBase):
             # Init the C BufferedStream object
             if allow_xruns is True: allow_xruns = 0xF
             _lib.init_stream(self._cstream, int(allow_xruns), int(allow_drops),
-                self.__frames, -1 if pad is True else int(pad), offset,
-                _ffi.NULL, _ffi.NULL)
+                self.__frames, pad, offset, _ffi.NULL, _ffi.NULL)
 
             # Cast our ring buffers for use in C
             if self.rxbuff is not None: self._cstream.rxbuff = \
@@ -402,6 +401,8 @@ class _BufferedStreamBase(_sd._StreamBase):
 
         # DEBUG for measuring polling performance
         self._rmisses = self._wmisses = 0
+
+        self._autoclose = True
 
     def __stopiothreads(self):
         # !This function is *not* thread safe!
@@ -524,12 +525,10 @@ class _BufferedStreamBase(_sd._StreamBase):
 
     @pad.setter
     def pad(self, value):
-        # !Setting this value is *not* thread safe!
-        # Note that the py_pastream callback doesn't act on 'pad' unless
-        # frames == 0; thus, set 'frames' first to get deterministic
-        # behavior.
-        value = -1 if value is True else int(value)
-        if self.__frames > 0 and value > 0:
+        # !Setting this value is *not* thread safe!  Note that the py_pastream
+        # callback doesn't act on 'pad' unless frames < 0; thus, set 'frames'
+        # first to get deterministic behavior.
+        if self.__frames >= 0 and value >= 0:
             self.__frames = self._cstream.frames = value + self.__frames
         self._cstream.pad = value
 
@@ -754,6 +753,7 @@ class _InputStreamMixin(object):
                         wait_time = self.time
                     if not active:
                         done = True
+                        if frames == 0: break
                     else:
                         self._rmisses += 1
                         _time.sleep(0.0025)
@@ -805,7 +805,9 @@ class _InputStreamMixin(object):
         except:
             try:                       self.abort()
             except _sd.PortAudioError: pass
-            raise
+            if not self._autoclose:    raise
+
+        if self._autoclose: self.close()
 
 
 class BufferedInputStream(_InputStreamMixin, _BufferedStreamBase):
@@ -844,14 +846,15 @@ class BufferedStream(BufferedInputStream, BufferedOutputStream):
     Parameters
     -----------
     frames : int, optional
-        If > 0, this sets the number of frames to play/record. (Note: This does
-        *not* include the length of any additional padding). If frames == 0
-        (the default), stream will complete when the send buffer is empty or,
-        for input-only streams, streaming will continue indefinitely.
-    pad : int or bool, optional
-        If > 0, number of zero frames to pad the playback with. If True or < 0,
-        output will automatically be zero padded whenever the transmit buffer
-        is empty. This has no effect on recordings.
+        Number of frames to play/record. (Note: This does *not* include the
+        length of any additional padding). If frames is negative (the default),
+        stream will continue until the send buffer is empty or, for input-only
+        streams, streaming will continue indefinitely.
+    pad : int, optional
+        Number of zero frames to pad the playback with. If negative then
+        padding is chosen so that the total playback length matches ``frames``
+        (or, if frames is negative, zero padding will be added
+        indefinitely). This has no effect on input-only streams.
     offset : int, optional
         Number of frames to discard from beginning of recording. This has no
         effect on playback.
@@ -1152,12 +1155,8 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
     else:
         stream = streamclass(inpf, **kwargs)
 
-    try:
-        for blk in stream.chunks(chunksize, overlap, always_2d, out):
-            yield blk
-    finally:
-        try:                       stream.close()
-        except _sd.PortAudioError: pass
+    stream._autoclose = True
+    return stream.chunks(chunksize, overlap, always_2d, out)
 
 
 # Used solely for the pastream app
@@ -1211,7 +1210,7 @@ Cross platform audio playback and capture.''')
         elif x.endswith('K'): x = int(float(x[:-1]) * 1024)
         elif x.endswith('m'): x = int(float(x[:-1]) * 1e6)
         elif x.endswith('M'): x = int(float(x[:-1]) * 1024 * 1024)
-        else:                 x = int(x)
+        else:                 x = int(float(x))
         return x
 
     def possizetype(x):
@@ -1246,16 +1245,17 @@ increase robustness against irregular file i/o behavior. Add a 'K' or 'M'
 suffix to specify size in kibi or mebi units. (Default %(default)d)''')
 
     parser.add_argument("-p", "--pad", type=sizetype, nargs='?', default=0,
-        const=True, help='''\
+        const=-1, help='''\
 Pad the input with frames of zeros. (Useful to avoid truncating full duplex
-recording). If no PAD argument is given or PAD is less than zero then padding
-is chosen so that playback will be exactly --frames.''')
+recording). If PAD is negative then padding is chosen so that the total
+playback length matches --frames (or, if frames is negative, zero padding will
+be added indefinitely).''')
 
     parser.add_argument("-o", "--offset", type=possizetype, default=0, help='''\
 Drop a number of frames from the start of a recording.''')
 
-    parser.add_argument("-n", "--frames", type=sizetype, default=0, help='''\
-Limit playback/capture to this many frames. If FRAMES equals to zero (the
+    parser.add_argument("-n", "--frames", type=sizetype, default=-1, help='''\
+Limit playback/capture to this many frames. If FRAMES is negative (the
 default), then streaming will continue until there is no playback data
 remaining or, if no playback was given, recording will continue
 indefinitely.''')
@@ -1312,6 +1312,7 @@ required.''')
 
 
 def _main(argv=None):
+    import os
     from itertools import chain
     if argv is None: argv = _sys.argv[1:]
     parser = _get_parser()
@@ -1333,7 +1334,7 @@ def _main(argv=None):
     if stream.out_fh is None:
         nullout = 'n/a'
     elif stream.out_fh.name == '-' or args.quiet:
-        import os; _sys.stdout = open(os.devnull, 'w')
+        _sys.stdout = open(os.devnull, 'w')
 
     statline = "\r{:8.3f}s {:10d} frames processed, {:>8s} frames free, " \
                "{:>8s} frames queued ({:d} xruns, {:f}% load)\r"

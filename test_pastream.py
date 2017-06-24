@@ -243,18 +243,16 @@ def test_stream_replay(devargs):
         stream.txbuff.write(data)
         stream.start()
         assert stream.active
-        stream.wait(0.05)
+        stream.wait(0.001)
         stream.abort()
-        assert stream.wait(2), "Timed out!"
         assert stream.aborted
 
         # Start stream then stop it
         stream.txbuff.write(data)
         stream.start()
         assert stream.active
-        stream.wait(0.05)
+        stream.wait(0.001)
         stream.stop()
-        assert stream.wait(2), "Timed out!"
         assert stream.stopped
 
 # For testing purposes

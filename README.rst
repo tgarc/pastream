@@ -11,7 +11,7 @@ pastream - Portaudio Streams for Python
 excellent `sounddevice <http://github.com/spatialaudio/python-sounddevice>`__
 python bindings to provide some more advanced functionality right out of the
 box. Note that in addition to the pastream *library*, pastream includes a
-`command line interface`_ for playing and recording audio files.
+`command line application`_ for playing and recording audio files.
 
 
 Features
