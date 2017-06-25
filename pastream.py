@@ -1191,19 +1191,9 @@ Cross platform audio playback and capture.''')
             print(_sd.query_devices())
             _sys.exit(0)
 
-    def csv(arg):
-        subtype = arg if callable(arg) else (lambda x: x)
-        def csv(value):
-            values = [subtype(v) or None for v in value.split(',')]
-            return values[0] if len(values) == 1 else values
-        return csv if callable(arg) else csv(arg)
-
     def dvctype(dvc):
-        dvclist = []
-        for v in dvc.split(','):
-            try:               dvclist.append(int(v))
-            except ValueError: dvclist.append(v or None)
-        return dvclist[0] if len(dvclist) == 1 else dvclist
+        try:               return int(dvc)
+        except ValueError: return dvc
 
     def sizetype(x):
         if x.endswith('k'):   x = int(float(x[:-1]) * 1e3)
@@ -1218,14 +1208,14 @@ Cross platform audio playback and capture.''')
         assert x > 0, "Must be a positive value."
         return x
 
-    parser.add_argument("input", type=lambda x: None if x == 'null' else x,
+    parser.add_argument("input", type=lambda x: None if x == 'null'[:min(3, len(x))] else x,
         help='''\
-Input audio file. Use the special designator 'null' for recording only. A
+Input audio file. Use the special designator 'nul' or 'null' for recording only. A
 single dash '-' may be used to read from STDIN.''')
 
-    parser.add_argument("output", type=lambda x: None if x == 'null' else x,
+    parser.add_argument("output", type=lambda x: None if x == 'null'[:min(3, len(x))] else x,
         help='''\
-Output audio file. Use the special designator 'null' for playback only. A
+Output audio file. Use the special designator 'nul' or 'null' for playback only. A
 single dash '-' may be used to write to STDOUT.''')
 
 #     parser.add_argument("--loop", default=False, nargs='?', metavar='n',
@@ -1269,7 +1259,7 @@ indefinitely.''')
 
     devopts = parser.add_argument_group("I/O device stream options")
 
-    devopts.add_argument("-d", "--device", type=dvctype,
+    devopts.add_argument("-d", "--device", type=dvctype, action='append',
         help='''\
 Audio device name expression or index number. Defaults to the
 PortAudio default device.''')
@@ -1279,10 +1269,10 @@ PortAudio buffer size in units of frames. If zero or not specified, backend
 will decide an optimal size.''')
 
     devopts.add_argument("-f", "--format", dest='dtype',
-        type=csv, choices=_sd._sampleformats.keys(), help='''\
+        choices=_sd._sampleformats.keys(), help='''\
 Sample format of device I/O stream.''')
 
-    devopts.add_argument("-c", "--channels", type=csv(int),
+    devopts.add_argument("-c", "--channels", type=int, action='append',
         help="Number of channels.")
 
     devopts.add_argument("-r", "--rate", dest='samplerate',
@@ -1293,19 +1283,19 @@ Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
     fileopts = parser.add_argument_group('''\
 Audio file formatting options. Options accept single values or pairs''')
 
-    fileopts.add_argument("-t", dest="file_type", type=csv(str.upper),
+    fileopts.add_argument("-t", dest="file_type", type=str.upper, action='append',
         choices=_sf.available_formats().keys(), help='''\
 Audio file type. (Required for RAW files). Typically this is determined from
 the file header or extension, but it can be manually specified here.''')
 
-    fileopts.add_argument("-e", dest="encoding", type=csv(str.upper),
+    fileopts.add_argument("-e", dest="encoding", type=str.upper, action='append',
         choices=_sf.available_subtypes(), help='''\
 Sample format encoding. Note for output file encodings: for file types that
 support PCM or FLOAT format, pastream will automatically choose the sample
 format that best matches the output device stream; otherwise, the subtype is
 required.''')
 
-    fileopts.add_argument("--endian", type=csv(str.lower),
+    fileopts.add_argument("--endian", type=str.lower, action='append',
         choices=['file', 'big', 'little'], help="Sample endianness.")
 
     return parser
@@ -1318,15 +1308,17 @@ def _main(argv=None):
     parser = _get_parser()
     args = parser.parse_args(argv)
 
+    unpack = lambda x: x[0] if x and len(x) == 1 else x
+    
     stream, kind = _SoundFileStreamFactory(args.input, args.output,
-                        samplerate=args.samplerate,
-                        blocksize=args.blocksize,
-                        buffersize=args.buffersize,
-                        frames=args.frames, pad=args.pad,
-                        offset=args.offset, endian=args.endian,
-                        subtype=args.encoding, format=args.file_type,
-                        device=args.device, channels=args.channels,
-                        dtype=args.dtype)
+                        samplerate=args.samplerate, blocksize=args.blocksize,
+                        buffersize=args.buffersize, frames=args.frames,
+                        pad=args.pad, offset=args.offset,
+                        endian=unpack(args.endian),
+                        subtype=unpack(args.encoding),
+                        format=unpack(args.file_type),
+                        device=unpack(args.device),
+                        channels=unpack(args.channels), dtype=args.dtype)
 
     nullinp = nullout = None
     if stream.inp_fh is None:

@@ -36,9 +36,9 @@ void reset_stream(Py_PaBufferedStream *stream) {
     stream->inputOverflows = 0;
     stream->outputUnderflows = 0;
     stream->outputOverflows = 0;
-    if ( stream->__framesIsUnset )
+    if ( stream->__autoframes )
         stream->frames = -1;
-    stream->__framesIsUnset = 0;
+    stream->__autoframes = 0;
 };
 
 int callback(
@@ -90,27 +90,26 @@ int callback(
                    0, 
                    (frame_count - oframes)*stream->txbuff->elementSizeBytes);
 
-            if ( frames < 0 && pad < 0 ) {
-                ; // pad indefinitely
-            }
-            else if ( frames < 0 ) {
-                // Figure out how much additional padding to insert and set frames
-                // equal to it
-                stream->__framesIsUnset = 1;
-                frames = stream->frames = stream->frame_count + oframes \
-                    + (pad > 0 ? pad : 0);
+            if ( frames < 0 ) {
+                if ( pad >= 0 ) {
+                    // Figure out how much additional padding to insert and set frames
+                    // equal to it
+                    stream->__autoframes = 1;
+                    frames = stream->frames = stream->frame_count + oframes + pad;
 
-                // exit point (2 of 2)
-                // We don't want to do an unncessary callback; end here
-                if ( stream->frame_count + frames_left >= frames ) {
-                    if ( stream->frame_count <= frames )
-                        frames_left = frames - stream->frame_count;
-                    else
-                        frames_left = 0;
-                    stream->last_callback = paComplete;
+                    // exit point (2 of 2)
+                    // We don't want to do an unncessary callback; end here
+                    if ( stream->frame_count + frames_left >= frames ) {
+                        if ( stream->frame_count <= frames )
+                            frames_left = frames - stream->frame_count;
+                        else
+                            frames_left = 0;
+                        stream->last_callback = paComplete;
+                    }
                 }
+                // else { pad indefinitely; }
             }
-            else if ( !stream->__framesIsUnset && pad >= 0 ) {
+            else if ( !stream->__autoframes && pad >= 0 ) {
                 strcpy(stream->errorMsg, "TransmitBufferEmpty");
                 stream->frame_count += oframes;
                 return (stream->last_callback = paAbort);

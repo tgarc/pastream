@@ -209,6 +209,22 @@ def test_soundfilestream_loopback(random_soundfile_input, devargs):
     with sf.SoundFile(outf) as out_fh:
         assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype)
 
+def test_stdin_stdout_loopback(random_soundfile_input, devargs):
+    inp_fh, preamble, dtype = random_soundfile_input
+
+    import subprocess, io
+    devargs['dtype'] = dtype
+
+    inp_fh.name.seek(0)
+
+    proc = subprocess.Popen(('pastream -twav - -tau - -d=%s -f=int32' % devargs['device']).split(),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    stdout = io.BytesIO(proc.communicate(inp_fh.name.read())[0])
+
+    inp_fh.name.seek(0)
+    with sf.SoundFile(stdout) as out_fh:
+        assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype)
+
 def test_offset(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
