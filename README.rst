@@ -1,3 +1,6 @@
+.. image:: https://badge.fury.io/py/pastream.svg
+    :target: https://badge.fury.io/py/pastream
+
 .. image:: https://travis-ci.org/tgarc/pastream.svg?branch=master
     :target: https://travis-ci.org/tgarc/pastream
 
@@ -11,7 +14,7 @@ pastream - Portaudio Streams for Python
 excellent `sounddevice <http://github.com/spatialaudio/python-sounddevice>`__
 python bindings to provide some more advanced functionality right out of the
 box. Note that in addition to the pastream *library*, pastream includes a
-`command line interface`_ for playing and recording audio files.
+`command line application`_ for playing and recording audio files.
 
 
 Features
@@ -78,8 +81,6 @@ install libffi-dev``, ``brew install libffi``). More information on installing
 ``libffi`` is available `here
 <https://cffi.readthedocs.io/en/latest/installation.html#platform-specific-instructions>`__.
 
-Building Source
----------------
 If doing a fresh checkout::
 
     $ git clone --recursive http://github.com/tgarc/pastream
@@ -113,13 +114,13 @@ Grab (real) frequency transformed live audio stream with 50% overlap:
 
    chunksize = 1024
    window = np.hanning(chunksize)
-   for l, x_l in ps.chunks(chunksize, overlap=chunksize//2, channels=1):
-       X_l = np.fft.rfft(x_l) * window
+   for l, x_l in enumerate(ps.chunks(chunksize, overlap=chunksize//2, channels=1)):
+       X_l = np.fft.rfft(x_l * window)
 
 See also the included examples under `pastream/examples`.
 
 
-Command Line Interface
+Command Line Application
 --------------------------------
 Once installed, the pastream application should be callable from your command
 line. If you're familiar with `sox <http://sox.sourceforge.net/>`__ you'll

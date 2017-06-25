@@ -1,4 +1,10 @@
 from cffi import FFI
+import platform
+
+if platform.system() == 'Darwin':
+    ring_buffer_size_t = 'int32_t'
+else:
+    ring_buffer_size_t = 'long'
 
 ffibuilder = FFI()
 ffibuilder.cdef(r"""
@@ -10,7 +16,6 @@ typedef struct PaStreamCallbackTimeInfo{
     PaTime currentTime;
     PaTime outputBufferDacTime;
 } PaStreamCallbackTimeInfo;
-typedef long ring_buffer_size_t;
 typedef unsigned long PaStreamCallbackFlags;
 #define paInputUnderflow  0x00000001
 #define paInputOverflow   0x00000002
@@ -20,6 +25,7 @@ typedef unsigned long PaStreamCallbackFlags;
 
 /* From pa_ringbuffer.h: */
 
+typedef %(ring_buffer_size_t)s ring_buffer_size_t;
 typedef struct PaUtilRingBuffer
 {
     ring_buffer_size_t  bufferSize;
@@ -40,7 +46,7 @@ ring_buffer_size_t PaUtil_GetRingBufferWriteRegions(PaUtilRingBuffer* rbuf, ring
 ring_buffer_size_t PaUtil_AdvanceRingBufferWriteIndex(PaUtilRingBuffer* rbuf, ring_buffer_size_t elementCount);
 ring_buffer_size_t PaUtil_GetRingBufferReadRegions(PaUtilRingBuffer* rbuf, ring_buffer_size_t elementCount, void** dataPtr1, ring_buffer_size_t* sizePtr1, void** dataPtr2, ring_buffer_size_t* sizePtr2);
 ring_buffer_size_t PaUtil_AdvanceRingBufferReadIndex(PaUtilRingBuffer* rbuf, ring_buffer_size_t elementCount);
-""")
+""" % locals())
 
 ffibuilder.cdef(open('src/py_pastream.h').read())
 
