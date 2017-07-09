@@ -1208,12 +1208,12 @@ Cross platform audio playback and capture.''')
         assert x > 0, "Must be a positive value."
         return x
 
-    parser.add_argument("input", type=lambda x: None if x == 'null'[:min(3, len(x))] else x,
+    parser.add_argument("input", type=lambda x: None if x == 'null'[:max(3, len(x))] else x,
         help='''\
 Input audio file. Use the special designator 'nul' or 'null' for recording only. A
 single dash '-' may be used to read from STDIN.''')
 
-    parser.add_argument("output", type=lambda x: None if x == 'null'[:min(3, len(x))] else x,
+    parser.add_argument("output", type=lambda x: None if x == 'null'[:max(3, len(x))] else x,
         help='''\
 Output audio file. Use the special designator 'nul' or 'null' for playback only. A
 single dash '-' may be used to write to STDOUT.''')
