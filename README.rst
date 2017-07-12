@@ -99,7 +99,7 @@ Record to file:
 
    import pastream as ps
 
-   with ps.SoundFileInputStream('recording.wav', device='my-device'):
+   with ps.SoundFileInputStream('recording.wav', device='my-device') as stream:
        stream.start()
        stream.wait()
 

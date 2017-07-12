@@ -110,7 +110,7 @@ int callback(
                 // else { pad indefinitely; }
             }
             else if ( !stream->__autoframes && pad >= 0 ) {
-                strcpy(stream->errorMsg, "TransmitBufferEmpty");
+                strcpy(stream->errorMsg, "BufferEmpty");
                 stream->frame_count += oframes;
                 return (stream->last_callback = paAbort);
             }
@@ -126,7 +126,7 @@ int callback(
 
         iframes = PaUtil_WriteRingBuffer(stream->rxbuff, (const void *) in_data, frames_left);
         if ( iframes < frames_left && !stream->allow_drops ) {
-            strcpy(stream->errorMsg, "ReceiveBufferFull");
+            strcpy(stream->errorMsg, "BufferFull");
             stream->frame_count += iframes;
             return (stream->last_callback = paAbort);
         }

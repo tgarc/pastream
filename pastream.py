@@ -36,7 +36,7 @@ import weakref as _weakref
 from _py_pastream import ffi as _ffi, lib as _lib
 
 
-__version__ = '0.0.4'
+__version__ = '0.0.5'
 __usage__ = "%(prog)s [options] [-d device] input output"
 
 # Set a default size for the audio callback ring buffer
@@ -54,23 +54,19 @@ paOutputOverflow = _lib.paOutputOverflow
 paOutputUnderflow = _lib.paOutputUnderflow
 
 
-class PaStreamException(Exception):
+class PaStreamError(Exception):
     pass
 
-
-class AudioBufferError(PaStreamException):
+class XRunError(PaStreamError):
     pass
 
-
-class XRunError(AudioBufferError):
+class AudioBufferError(PaStreamError):
     pass
 
-
-class ReceiveBufferFull(AudioBufferError):
+class BufferFull(AudioBufferError):
     pass
 
-
-class TransmitBufferEmpty(AudioBufferError):
+class BufferEmpty(AudioBufferError):
     pass
 
 
@@ -291,8 +287,8 @@ class RingBuffer(object):
 
 
 # TODO?: add option to do asynchronous exception raising
-class _BufferedStreamBase(_sd._StreamBase):
-    # See BufferedStream for docstring
+class _StreamBase(_sd._StreamBase):
+    # See Stream for docstring
     def __init__(self, kind, device=None, samplerate=None, channels=None,
                  dtype=None, frames=-1, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
@@ -324,7 +320,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         self.__frames = frames
         self.__weakref = _weakref.WeakKeyDictionary()
         if kwargs.get('callback', None) is None:
-            # Create the C BufferedStream object
+            # Create the C Stream object
             lastTime = _ffi.new('PaStreamCallbackTimeInfo*')
             self._cstream = _ffi.new("Py_PaBufferedStream*")
             self._cstream.lastTime = lastTime
@@ -395,7 +391,7 @@ class _BufferedStreamBase(_sd._StreamBase):
 
             user_callback()
 
-        super(_BufferedStreamBase, self).__init__(kind, blocksize=blocksize,
+        super(_StreamBase, self).__init__(kind, blocksize=blocksize,
             device=device, samplerate=samplerate, channels=channels,
             dtype=dtype, finished_callback=finished_callback, **kwargs)
 
@@ -558,7 +554,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         # Apparently when using a PaStreamFinishedCallback the stream
         # *must* be stopped before starting the stream again or the
         # streamFinishedCallback will never be called
-        super(_BufferedStreamBase, self).stop()
+        super(_StreamBase, self).stop()
 
         # Reset stream state machine
         with self.__statecond:
@@ -581,28 +577,29 @@ class _BufferedStreamBase(_sd._StreamBase):
             self._txthread = _threading.Thread(**self._txthread_args)
             self._txthread.daemon = True
 
-    def start(self):
+    def start(self, prebuffer=True):
         self._prepare()
         if self._txthread is not None:
             self._txthread.start()
-            while self.txbuff.write_available and self._txthread.is_alive():
-                _time.sleep(0.05)
-            self._reraise_exceptions()
-        super(_BufferedStreamBase, self).start()
+            if prebuffer:
+                while self.txbuff.write_available and self._txthread.is_alive():
+                    _time.sleep(0.05)
+                self._reraise_exceptions()
+        super(_StreamBase, self).start()
         if self._rxthread is not None:
             self._rxthread.start()
             self._reraise_exceptions()
 
     def stop(self):
         with self.__streamlock:
-            super(_BufferedStreamBase, self).stop()
+            super(_StreamBase, self).stop()
         self.__stopiothreads()
         self._reraise_exceptions()
 
     def abort(self):
         with self.__streamlock:
             self.__aborting = True
-            super(_BufferedStreamBase, self).abort()
+            super(_StreamBase, self).abort()
         self.__stopiothreads()
         self._reraise_exceptions()
 
@@ -613,10 +610,10 @@ class _BufferedStreamBase(_sd._StreamBase):
         if not self.finished:
             with self.__streamlock:
                 self.__aborting = True
-                super(_BufferedStreamBase, self).abort()
+                super(_StreamBase, self).abort()
         self.__stopiothreads()
         with self.__streamlock:
-            super(_BufferedStreamBase, self).close()
+            super(_StreamBase, self).close()
         self._reraise_exceptions()
 
     def __repr__(self):
@@ -810,27 +807,25 @@ class _InputStreamMixin(object):
         if self._autoclose: self.close()
 
 
-class BufferedInputStream(_InputStreamMixin, _BufferedStreamBase):
+class InputStream(_InputStreamMixin, _StreamBase):
     """
-    Record only stream. See :class:`BufferedStream` for documentation of
+    Record only stream. See :class:`Stream` for documentation of
     parameters.
     """
 
     def __init__(self, *args, **kwargs):
-        super(BufferedInputStream, self).__init__('input', *args, **kwargs)
+        super(InputStream, self).__init__('input', *args, **kwargs)
 
-
-class BufferedOutputStream(_BufferedStreamBase):
+class OutputStream(_StreamBase):
     """
-    Playback only stream. See :class:`BufferedStream` for documentation of
+    Playback only stream. See :class:`Stream` for documentation of
     parameters.
     """
 
     def __init__(self, *args, **kwargs):
-        super(BufferedOutputStream, self).__init__('output', *args, **kwargs)
+        super(OutputStream, self).__init__('output', *args, **kwargs)
 
-
-class BufferedStream(BufferedInputStream, BufferedOutputStream):
+class Stream(InputStream, OutputStream):
     """
     This class uses a RingBuffer for reading and writing audio
     data. This double buffers the audio data so that any processing is
@@ -890,10 +885,10 @@ class BufferedStream(BufferedInputStream, BufferedOutputStream):
     """
 
     def __init__(self, *args, **kwargs):
-        _BufferedStreamBase.__init__(self, 'duplex', *args, **kwargs)
+        _StreamBase.__init__(self, 'duplex', *args, **kwargs)
 
 
-class _SoundFileStreamBase(_BufferedStreamBase):
+class _SoundFileStreamBase(_StreamBase):
     # See SoundFileStream for docstring
     def __init__(self, kind, inpf=None, outf=None, reader=None, writer=None,
                  format=None, subtype=None, endian=None, **kwargs):
@@ -969,7 +964,7 @@ Could not determine an appropriate default subtype for '{0}' output file format\
         else:
             self.out_fh = self._outf
 
-    # Default handler for writing input from a BufferedStream to a SoundFile
+    # Default handler for writing input from a Stream to a SoundFile
     # object
     @staticmethod
     def _soundfilewriter(stream, rxbuff):
@@ -1006,7 +1001,7 @@ Could not determine an appropriate default subtype for '{0}' output file format\
                 _time.sleep(sleeptime)
 
     # Default handler for reading input from a SoundFile object and writing it
-    # to a BufferedStream
+    # to a Stream
     @staticmethod
     def _soundfilereader(stream, txbuff):
         if stream.rxbuff is not None:
@@ -1099,12 +1094,12 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
         Parameters to pass to SoundFile constructor(s). Accepts pairs to allow
         different parameters for input and output.
     reader, writer, kind, blocksize, **kwargs
-        Additional parameters to pass to _BufferedStreamBase.
+        Additional parameters to pass to _StreamBase.
     """
 
     def __init__(self, inpf=None, outf=None, buffersize=_PA_BUFFERSIZE, **kwargs):
         # If you're not using soundfiles for the input or the output,
-        # then you should probably be using the BufferedStream class
+        # then you should probably be using the Stream class
         if inpf is None and outf is None:
             raise ValueError("No input or output file given.")
 
@@ -1121,7 +1116,7 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
     Parameters
     ------------
     chunksize, overlap, always_2d, out
-        See :meth:`BufferedStream.chunks` for description.
+        See :meth:`Stream.chunks` for description.
     inpf : SoundFile compatible input, optional
         Optional input stimuli.
 
@@ -1129,14 +1124,14 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
     -----------------
     streamclass : object
         Base class to use. By default the streamclass will be one of
-        BufferedInputStream, BufferedStream or SoundFileStream depending
+        InputStream, Stream or SoundFileStream depending
         on whether an input file and/or `writer` argument was supplied.
     **kwargs
         Additional arguments to pass to base stream class.
 
     See Also
     --------
-    :meth:`BufferedInputStream.chunks`, :meth:`BufferedStream.chunks`
+    :meth:`InputStream.chunks`, :meth:`Stream.chunks`
 
     Yields
     -------
@@ -1147,9 +1142,9 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
         if inpf is not None:
             stream = SoundFileStream(inpf, **kwargs)
         elif kwargs.get('writer', None) is not None:
-            stream = BufferedStream(**kwargs)
+            stream = Stream(**kwargs)
         else:
-            stream = BufferedInputStream(**kwargs)
+            stream = InputStream(**kwargs)
     elif inpf is None:
         stream = streamclass(**kwargs)
     else:
@@ -1157,6 +1152,7 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
 
     stream._autoclose = True
     return stream.chunks(chunksize, overlap, always_2d, out)
+
 
 
 # Used solely for the pastream app
