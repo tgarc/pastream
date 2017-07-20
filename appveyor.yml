@@ -8,11 +8,12 @@ environment:
   TWINE_USERNAME: tgarc
   TWINE_PASSWORD:
     secure: DOd96g4ffAQbXuqMwLlpMw==
-  CIBW_SKIP: 'cp26* cp33*'
 
 install:
-  - pip install cibuildwheel==0.2.1
+  # - pip install cibuildwheel==0.2.0
   - git submodule update --init --recursive
+  - git clone https://github.com/joerick/cibuildwheel
+  - python -m pip install cibuildwheel\
 
 build_script:
   - cibuildwheel --output-dir wheelhouse

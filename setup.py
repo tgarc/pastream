@@ -1,5 +1,12 @@
 import os
-from setuptools import setup, find_packages
+from setuptools import setup
+from setuptools.dist import Distribution
+
+class BinaryDistribution(Distribution):
+    def is_pure(self):
+        return False
+    def has_ext_modules(self):
+        return True
 
 __version__ = 'unknown'
 
@@ -26,7 +33,6 @@ setup(name='pastream',
           'soundfile>=0.9.0',
           'sounddevice>=0.3.7',
       ],
-      setup_requires=['CFFI>=1.4.0'],
       tests_require=['pytest>=3.0', 'numpy'],
       extras_require={'examples': ['numpy', 'matplotlib']},
       classifiers=[
@@ -38,4 +44,5 @@ setup(name='pastream',
           'Topic :: Multimedia :: Sound/Audio'
       ],
       include_package_data=True,
-      zip_safe=False)
+      zip_safe=False,
+      distclass=BinaryDistribution)
