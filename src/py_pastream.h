@@ -3,7 +3,6 @@
 
 typedef struct Py_PaBufferedStream {
     PaStreamCallbackFlags status;
-    PaStreamCallbackFlags allow_xruns;
     unsigned char allow_drops;    // Allow dropping of rxbuff frames
     PaStreamCallbackTimeInfo* lastTime;
     int last_callback;
@@ -24,7 +23,6 @@ typedef struct Py_PaBufferedStream {
 // call once for initialization
 void init_stream(
     Py_PaBufferedStream *stream, 
-    PaStreamCallbackFlags allow_xruns, 
     unsigned char allow_drops,
     long frames,
     long pad,

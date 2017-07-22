@@ -5,7 +5,6 @@
 
 void init_stream(
     Py_PaBufferedStream *stream, 
-    PaStreamCallbackFlags allow_xruns, 
     unsigned char allow_drops,
     long frames,
     long pad,
@@ -13,7 +12,6 @@ void init_stream(
     PaUtilRingBuffer *rxbuff,
     PaUtilRingBuffer *txbuff) 
 {
-    stream->allow_xruns = allow_xruns;
     stream->allow_drops = allow_drops;
     stream->frames = (frames >= 0 && pad >= 0) ? (frames + pad) : frames;
     // technically if frames < 0 padding has no meaning, but set it anyways to
@@ -66,10 +64,6 @@ int callback(
             stream->outputUnderflows++;
         if ( status & paOutputOverflow )
             stream->outputOverflows++;
-        if ( status & ~(stream->allow_xruns | paPrimingOutput) ) {
-            strcpy(stream->errorMsg, "XRunError");
-            return (stream->last_callback = paAbort);
-        }
     }
 
     // exit point (1 of 2)

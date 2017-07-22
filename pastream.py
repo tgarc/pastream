@@ -57,9 +57,6 @@ paOutputUnderflow = _lib.paOutputUnderflow
 class PaStreamError(Exception):
     pass
 
-class XRunError(PaStreamError):
-    pass
-
 class AudioBufferError(PaStreamError):
     pass
 
@@ -292,7 +289,7 @@ class _StreamBase(_sd._StreamBase):
     def __init__(self, kind, device=None, samplerate=None, channels=None,
                  dtype=None, frames=-1, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
-                 allow_xruns=True, allow_drops=False, blocksize=None, **kwargs):
+                 allow_drops=False, blocksize=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
         # the stream in order to be able to pass our user_data
         self.txbuff = self.rxbuff = None
@@ -327,8 +324,7 @@ class _StreamBase(_sd._StreamBase):
             self.__weakref[self._cstream] = lastTime
 
             # Init the C BufferedStream object
-            if allow_xruns is True: allow_xruns = 0xF
-            _lib.init_stream(self._cstream, int(allow_xruns), int(allow_drops),
+            _lib.init_stream(self._cstream, int(allow_drops),
                 self.__frames, pad, offset, _ffi.NULL, _ffi.NULL)
 
             # Cast our ring buffers for use in C
@@ -373,8 +369,6 @@ class _StreamBase(_sd._StreamBase):
             if len(msg):
                 exctype, excmsg = msg.split(':', 1) if ':' in msg else (msg, '')
                 exctype = getattr(_sys.modules[__name__], exctype)
-                if exctype is XRunError and not len(excmsg):
-                    excmsg = str(_sd.CallbackFlags(self.status))
                 self._set_exception(exctype(excmsg))
 
             with self.__statecond:
@@ -858,15 +852,9 @@ class Stream(InputStream, OutputStream):
         blocksizes.
     reader, writer : function, optional
         Buffer reader and writer functions to be run in a separate thread.
-    allow_xruns : int or bool, optional
-        Allowable portaudio xrun conditions. If False (any xrun condition), or
-        some combination of pa{Input,Output}{Overflow,Underflow}, the stream
-        will be aborted and an ``XRunError`` raised whenever an offending xrun
-        condition is detected.
     allow_drops : bool, optional
         Allow dropping of input frames when the receive buffer (``rxbuff``) is
-        full. Note that this option is independent of ``allow_xruns``; it is
-        not effected by any xrun conditions in the audio backend.
+        full.
     blocksize : int, optional
         Portaudio buffer size. If None or 0 (recommended), the Portaudio
         backend will automatically determine a size.
