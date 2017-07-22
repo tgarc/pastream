@@ -50,7 +50,7 @@ if inpf is not None:
     cls = ps.SoundFileStream
     kwargs = dict(format=format, subtype=subtype, inpf=inpf)
 else:
-    cls = ps.BufferedInputStream; kwargs = {}
+    cls = ps.InputStream; kwargs = {}
 
 try:
     stream = cls(channels=1, device=dev, **kwargs)
