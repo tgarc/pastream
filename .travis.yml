@@ -27,7 +27,7 @@ script:
   - cibuildwheel --output-dir wheelhouse
   - |
     if [[ $TRAVIS_TAG = *rc* ]]; then
-        twine upload wheelhouse/*.whl --repository-url https://testpypi.python.org/pypi --skip-existing
+        twine upload wheelhouse/*.whl --repository-url https://test.pypi.org/legacy/ --skip-existing
     elif [[ $TRAVIS_TAG ]]; then
         twine upload wheelhouse/*.whl --skip-existing
     fi
@@ -43,7 +43,7 @@ __base_deploy: &base_deploy
 deploy:
   # test deploy
   - <<: *base_deploy
-    server: https://testpypi.python.org/pypi
+    server: https://test.pypi.org/legacy/
     on:
       condition: $TRAVIS_OS_NAME = linux && $TRAVIS_TAG = *rc*
       tags: true
