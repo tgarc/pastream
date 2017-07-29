@@ -23,11 +23,8 @@ matrix:
         - source env/bin/activate
 
 script:
-  - git clone https://github.com/joerick/cibuildwheel
-  - pip install cibuildwheel/
-  # - pip install cibuildwheel==0.2.0
+  - pip install cibuildwheel twine
   - cibuildwheel --output-dir wheelhouse
-  - pip install twine
   - |
     if [[ $TRAVIS_TAG = *rc* ]]; then
         twine upload wheelhouse/*.whl --repository-url https://testpypi.python.org/pypi --skip-existing

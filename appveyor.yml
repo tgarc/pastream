@@ -10,10 +10,8 @@ environment:
     secure: DOd96g4ffAQbXuqMwLlpMw==
 
 install:
-  # - pip install cibuildwheel==0.2.0
   - git submodule update --init --recursive
-  - git clone https://github.com/joerick/cibuildwheel
-  - python -m pip install cibuildwheel\
+  - pip install cibuildwheel twine
 
 build_script:
   - cibuildwheel --output-dir wheelhouse
@@ -21,7 +19,6 @@ build_script:
 deploy_script:
   - ps: |
       if ($env:APPVEYOR_REPO_TAG -eq "true") {
-          python -m pip install twine
           if ($env:APPVEYOR_REPO_TAG_NAME.Contains("rc")) {
               $env:TWINE_REPOSITORY_URL = "https://testpypi.python.org/pypi"
           }
