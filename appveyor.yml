@@ -8,11 +8,10 @@ environment:
   TWINE_USERNAME: tgarc
   TWINE_PASSWORD:
     secure: DOd96g4ffAQbXuqMwLlpMw==
-  CIBW_SKIP: 'cp26* cp33*'
 
 install:
-  - pip install cibuildwheel==0.2.1
   - git submodule update --init --recursive
+  - pip install cibuildwheel twine
 
 build_script:
   - cibuildwheel --output-dir wheelhouse
@@ -20,9 +19,8 @@ build_script:
 deploy_script:
   - ps: |
       if ($env:APPVEYOR_REPO_TAG -eq "true") {
-          python -m pip install twine
           if ($env:APPVEYOR_REPO_TAG_NAME.Contains("rc")) {
-              $env:TWINE_REPOSITORY_URL = "https://testpypi.python.org/pypi"
+              $env:TWINE_REPOSITORY_URL = "https://test.pypi.org/legacy/"
           }
       }
   - cmd: IF "%APPVEYOR_REPO_TAG%"=="true" python -m twine upload wheelhouse\*.whl --skip-existing

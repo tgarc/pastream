@@ -1,6 +1,28 @@
 Changelog
 =========
 
+0.0.6
+-----
+- bugixes
+
+    + fix 'null' not properly matching on cmdline
+
+    + chunks: check that portaudio has not been terminated before trying to
+      close/stop a stream
+
+- backwards compatibility breaks: 
+
+    + drop allow_runs/XRunError
+    + Buffered*Stream -> *Stream
+    + *Buffer{Empty,Full} -> Buffer{Empty,Full}
+
+- fix remaining issues with wheel building
+
+- Dropped unused exception classes (PaStreamError, AudioBufferError)
+    
+- Added prebuffer argument to start() to bypass filling output buffer
+  before stream starts
+    
 
 0.0.5
 -----

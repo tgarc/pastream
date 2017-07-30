@@ -2,7 +2,7 @@
 Loopback tests for pastream.
 """
 from __future__ import print_function
-import os, platform
+import os, platform, subprocess, io
 import pytest
 import time
 import tempfile
@@ -21,7 +21,8 @@ if system == 'Windows':
 elif system == 'Darwin':
     raise Exception("Currently no test support for OSX")
 else:
-    # This is assuming you're using the ALSA device set up by etc/.asoundrc
+    # This is assuming you're using the ALSA device set up by .asoundrc config
+    # file in the root of the repository
     DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'channels':
                       2, 'samplerate': 48000 }
 
@@ -47,9 +48,8 @@ def find_soundfile_delay(xf, preamble, dtype):
     off = -1
 
     blocksize = 2048
-    inpblocks = xf.blocks(blocksize, dtype=dtype, always_2d=True)
     unsigned_dtype = dtype if dtype.startswith('u') else 'u'+dtype
-    for i,inpblk in enumerate(inpblocks):
+    for i,inpblk in enumerate(xf.blocks(blocksize, dtype=dtype, always_2d=True)):
         nonzeros = np.where(inpblk[:, 0].view(unsigned_dtype) == preamble)
         if nonzeros[0].size:
             off = i*blocksize + nonzeros[0][0]
@@ -76,7 +76,7 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
         npt.assert_array_equal(inp, out, "Loopback data mismatch")
         mframes += readframes
 
-    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated" 
+    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated"
           % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
 
 def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None, outtype=None, **kwargs):
@@ -106,7 +106,7 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
             t = time.time()
             if not found_delay:
                 matches = outframes.view(unsigned_dtype) == preamble
-                if np.any(matches): 
+                if np.any(matches):
                     found_delay = True
                     mindices = np.where(matches)[0]
                     frames += mindices[0]
@@ -124,7 +124,7 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
         assert delay != -1, "Preamble not found or was corrupted"
 
     stats = mframes, frames, delay, len(inpf2) - inpf2.tell(), looptime / i, stream._rmisses
-    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %f interlooptime; %d misses" 
+    print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %f interlooptime; %d misses"
           % stats)
     return stats
 
@@ -162,9 +162,9 @@ def random_soundfile_input(tmpdir, scope='session'):
     # we don't use an actual TemporaryFile because they don't support multiple
     # file handles on windows
     rdmf= open(tempfile.mktemp(dir=str(tmpdir)), 'w+b')
-    rdm_fh = sf.SoundFile(rdmf, 'w+', 
+    rdm_fh = sf.SoundFile(rdmf, 'w+',
                           DEVICE_KWARGS['samplerate'],
-                          DEVICE_KWARGS['channels'], 
+                          DEVICE_KWARGS['channels'],
                           'PCM_'+['8','16','24','32'][elementsize-1],
                           format='wav')
 
@@ -174,10 +174,10 @@ def random_soundfile_input(tmpdir, scope='session'):
         rdm_fh.seek(0)
 
         dtype = DEVICE_KWARGS['dtype']
-        if DEVICE_KWARGS['dtype'] == 'int24': 
+        if DEVICE_KWARGS['dtype'] == 'int24':
             # Tell the OS it's a 32-bit stream and ignore the extra zeros
             # because 24 bit streams are annoying to deal with
-            dtype = 'int32' 
+            dtype = 'int32'
 
         shift = 8*(4-elementsize)
 
@@ -212,7 +212,6 @@ def test_soundfilestream_loopback(random_soundfile_input, devargs):
 def test_stdin_stdout_loopback(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
-    import subprocess, io
     devargs['dtype'] = dtype
 
     inp_fh.name.seek(0)
@@ -244,9 +243,9 @@ def test_pad(random_soundfile_input, devargs):
     # If we compensate for the delay we should have no frames truncated
     mframes, frames, delay, ntrunc = assert_chunks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
     assert ntrunc == 0
- 
-def test_stream_replay(devargs):   
-    with ps.BufferedStream(buffersize=65536, **devargs) as stream:
+
+def test_stream_replay(devargs):
+    with ps.Stream(buffersize=65536, **devargs) as stream:
         data = bytearray(len(stream.txbuff)*stream.txbuff.elementsize)
 
         # Start and let stream finish
@@ -276,7 +275,7 @@ class MyException(Exception):
     pass
 
 def test_deferred_exception_handling(devargs):
-    stream = ps.BufferedStream(buffersize=8192, **devargs)
+    stream = ps.Stream(buffersize=8192, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
@@ -289,7 +288,7 @@ def test_threaded_write_deferred_exception_handling(devargs):
     def writer(stream, ringbuff):
         raise MyException(txmsg)
 
-    stream = ps.BufferedStream(buffersize=8192, writer=writer, **devargs)
+    stream = ps.Stream(buffersize=8192, writer=writer, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
@@ -303,7 +302,7 @@ def test_threaded_read_deferred_exception_handling(devargs):
         raise MyException(rxmsg)
 
     # A reader exception should also stop the stream
-    stream = ps.BufferedStream(buffersize=8192, reader=reader, **devargs)
+    stream = ps.Stream(buffersize=8192, reader=reader, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
@@ -312,9 +311,9 @@ def test_threaded_read_deferred_exception_handling(devargs):
     assert str(excinfo.value) == rxmsg
 
 def test_frames_raises_underflow(devargs):
-    stream = ps.BufferedStream(buffersize=8192, frames=9000, **devargs)
+    stream = ps.Stream(buffersize=8192, frames=9000, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
-    with pytest.raises(ps.TransmitBufferEmpty) as excinfo:
+    with pytest.raises(ps.BufferEmpty) as excinfo:
         with stream:
             stream.start()
             stream.wait()

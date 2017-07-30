@@ -8,8 +8,8 @@
     :target: https://ci.appveyor.com/project/tgarc/pastream/branch/master
 
 
-pastream - Portaudio Streams for Python
-=======================================
+pastream - GIL-less Portaudio Streams for Python
+=================================================
 `pastream` builds on top of `portaudio <http://www.portaudio.com/>`__ and the
 excellent `sounddevice <http://github.com/spatialaudio/python-sounddevice>`__
 python bindings to provide some more advanced functionality right out of the
@@ -37,10 +37,6 @@ Input Stream iterators
     
     See `pastream.chunks` and `pastream.*Stream.chunks` method.
             
-Expanded State Machine
-    Adds the ability to differentiate whether a stream has been aborted or
-    completed successfully even after the stream has finished.
-
 Reader/Writer Threads
     pastream simplifies the process of implementing stream reader and writer
     threads to manipulate and/or generate data in the background while leaving
@@ -102,7 +98,7 @@ Record to file:
 
    import pastream as ps
 
-   with ps.SoundFileInputStream('recording.wav', device='my-device'):
+   with ps.SoundFileInputStream('recording.wav', device='my-device') as stream:
        stream.start()
        stream.wait()
 
@@ -139,18 +135,14 @@ Simultaneous play and record from the default audio device::
     
     $ pastream input.wav output.wav
 
-Record only::
-    
-    $ pastream null output.wav
-
 Pipe input from sox using the AU format::
   
     $ sox -n -t au - synth sine 440 | pastream - output.wav
 
 Play a RAW file::
 
-    $ pastream null -c1 -r48k -e=pcm_16 output.raw
+    $ pastream -c1 -r48k -e=pcm_16 -o output.raw
 
 Record 10 seconds of audio at 48kHz::
 
-    $ pastream null output.wav -r48k -n=$(( 48000 * 10 ))
+    $ pastream null output.wav -r48k -n=480k

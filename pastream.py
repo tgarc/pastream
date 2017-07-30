@@ -36,8 +36,8 @@ import weakref as _weakref
 from _py_pastream import ffi as _ffi, lib as _lib
 
 
-__version__ = '0.0.5'
-__usage__ = "%(prog)s [options] [-d device] input output"
+__version__ = '0.0.6'
+__usage__ = "%(prog)s [options] [input] [output]"
 
 # Set a default size for the audio callback ring buffer
 _PA_BUFFERSIZE = 1 << 20
@@ -54,23 +54,10 @@ paOutputOverflow = _lib.paOutputOverflow
 paOutputUnderflow = _lib.paOutputUnderflow
 
 
-class PaStreamException(Exception):
+class BufferFull(Exception):
     pass
 
-
-class AudioBufferError(PaStreamException):
-    pass
-
-
-class XRunError(AudioBufferError):
-    pass
-
-
-class ReceiveBufferFull(AudioBufferError):
-    pass
-
-
-class TransmitBufferEmpty(AudioBufferError):
+class BufferEmpty(Exception):
     pass
 
 
@@ -291,12 +278,12 @@ class RingBuffer(object):
 
 
 # TODO?: add option to do asynchronous exception raising
-class _BufferedStreamBase(_sd._StreamBase):
-    # See BufferedStream for docstring
+class _StreamBase(_sd._StreamBase):
+    # See Stream for docstring
     def __init__(self, kind, device=None, samplerate=None, channels=None,
                  dtype=None, frames=-1, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
-                 allow_xruns=True, allow_drops=False, blocksize=None, **kwargs):
+                 allow_drops=False, blocksize=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
         # the stream in order to be able to pass our user_data
         self.txbuff = self.rxbuff = None
@@ -324,15 +311,14 @@ class _BufferedStreamBase(_sd._StreamBase):
         self.__frames = frames
         self.__weakref = _weakref.WeakKeyDictionary()
         if kwargs.get('callback', None) is None:
-            # Create the C BufferedStream object
+            # Create the C Stream object
             lastTime = _ffi.new('PaStreamCallbackTimeInfo*')
             self._cstream = _ffi.new("Py_PaBufferedStream*")
             self._cstream.lastTime = lastTime
             self.__weakref[self._cstream] = lastTime
 
             # Init the C BufferedStream object
-            if allow_xruns is True: allow_xruns = 0xF
-            _lib.init_stream(self._cstream, int(allow_xruns), int(allow_drops),
+            _lib.init_stream(self._cstream, int(allow_drops),
                 self.__frames, pad, offset, _ffi.NULL, _ffi.NULL)
 
             # Cast our ring buffers for use in C
@@ -377,8 +363,6 @@ class _BufferedStreamBase(_sd._StreamBase):
             if len(msg):
                 exctype, excmsg = msg.split(':', 1) if ':' in msg else (msg, '')
                 exctype = getattr(_sys.modules[__name__], exctype)
-                if exctype is XRunError and not len(excmsg):
-                    excmsg = str(_sd.CallbackFlags(self.status))
                 self._set_exception(exctype(excmsg))
 
             with self.__statecond:
@@ -395,14 +379,14 @@ class _BufferedStreamBase(_sd._StreamBase):
 
             user_callback()
 
-        super(_BufferedStreamBase, self).__init__(kind, blocksize=blocksize,
+        super(_StreamBase, self).__init__(kind, blocksize=blocksize,
             device=device, samplerate=samplerate, channels=channels,
             dtype=dtype, finished_callback=finished_callback, **kwargs)
 
         # DEBUG for measuring polling performance
         self._rmisses = self._wmisses = 0
 
-        self._autoclose = True
+        self._autoclose = False
 
     def __stopiothreads(self):
         # !This function is *not* thread safe!
@@ -558,7 +542,7 @@ class _BufferedStreamBase(_sd._StreamBase):
         # Apparently when using a PaStreamFinishedCallback the stream
         # *must* be stopped before starting the stream again or the
         # streamFinishedCallback will never be called
-        super(_BufferedStreamBase, self).stop()
+        super(_StreamBase, self).stop()
 
         # Reset stream state machine
         with self.__statecond:
@@ -581,28 +565,29 @@ class _BufferedStreamBase(_sd._StreamBase):
             self._txthread = _threading.Thread(**self._txthread_args)
             self._txthread.daemon = True
 
-    def start(self):
+    def start(self, prebuffer=True):
         self._prepare()
         if self._txthread is not None:
             self._txthread.start()
-            while self.txbuff.write_available and self._txthread.is_alive():
-                _time.sleep(0.05)
-            self._reraise_exceptions()
-        super(_BufferedStreamBase, self).start()
+            if prebuffer:
+                while self.txbuff.write_available and self._txthread.is_alive():
+                    _time.sleep(0.05)
+                self._reraise_exceptions()
+        super(_StreamBase, self).start()
         if self._rxthread is not None:
             self._rxthread.start()
             self._reraise_exceptions()
 
     def stop(self):
         with self.__streamlock:
-            super(_BufferedStreamBase, self).stop()
+            super(_StreamBase, self).stop()
         self.__stopiothreads()
         self._reraise_exceptions()
 
     def abort(self):
         with self.__streamlock:
             self.__aborting = True
-            super(_BufferedStreamBase, self).abort()
+            super(_StreamBase, self).abort()
         self.__stopiothreads()
         self._reraise_exceptions()
 
@@ -613,10 +598,10 @@ class _BufferedStreamBase(_sd._StreamBase):
         if not self.finished:
             with self.__streamlock:
                 self.__aborting = True
-                super(_BufferedStreamBase, self).abort()
+                super(_StreamBase, self).abort()
         self.__stopiothreads()
         with self.__streamlock:
-            super(_BufferedStreamBase, self).close()
+            super(_StreamBase, self).close()
         self._reraise_exceptions()
 
     def __repr__(self):
@@ -803,34 +788,33 @@ class _InputStreamMixin(object):
                 if sleeptime > 0:
                     _time.sleep(sleeptime)
         except:
-            try:                       self.abort()
-            except _sd.PortAudioError: pass
-            if not self._autoclose:    raise
+            if _sd._initialized: 
+                self.stop()
+                if self._autoclose: self.close()
+            raise
 
-        if self._autoclose: self.close()
 
-
-class BufferedInputStream(_InputStreamMixin, _BufferedStreamBase):
+class InputStream(_InputStreamMixin, _StreamBase):
     """
-    Record only stream. See :class:`BufferedStream` for documentation of
+    Record only stream. See :class:`Stream` for documentation of
     parameters.
     """
 
     def __init__(self, *args, **kwargs):
-        super(BufferedInputStream, self).__init__('input', *args, **kwargs)
+        super(InputStream, self).__init__('input', *args, **kwargs)
 
 
-class BufferedOutputStream(_BufferedStreamBase):
+class OutputStream(_StreamBase):
     """
-    Playback only stream. See :class:`BufferedStream` for documentation of
+    Playback only stream. See :class:`Stream` for documentation of
     parameters.
     """
 
     def __init__(self, *args, **kwargs):
-        super(BufferedOutputStream, self).__init__('output', *args, **kwargs)
+        super(OutputStream, self).__init__('output', *args, **kwargs)
 
 
-class BufferedStream(BufferedInputStream, BufferedOutputStream):
+class Stream(InputStream, OutputStream):
     """
     This class uses a RingBuffer for reading and writing audio
     data. This double buffers the audio data so that any processing is
@@ -863,15 +847,9 @@ class BufferedStream(BufferedInputStream, BufferedOutputStream):
         blocksizes.
     reader, writer : function, optional
         Buffer reader and writer functions to be run in a separate thread.
-    allow_xruns : int or bool, optional
-        Allowable portaudio xrun conditions. If False (any xrun condition), or
-        some combination of pa{Input,Output}{Overflow,Underflow}, the stream
-        will be aborted and an ``XRunError`` raised whenever an offending xrun
-        condition is detected.
     allow_drops : bool, optional
         Allow dropping of input frames when the receive buffer (``rxbuff``) is
-        full. Note that this option is independent of ``allow_xruns``; it is
-        not effected by any xrun conditions in the audio backend.
+        full.
     blocksize : int, optional
         Portaudio buffer size. If None or 0 (recommended), the Portaudio
         backend will automatically determine a size.
@@ -890,10 +868,10 @@ class BufferedStream(BufferedInputStream, BufferedOutputStream):
     """
 
     def __init__(self, *args, **kwargs):
-        _BufferedStreamBase.__init__(self, 'duplex', *args, **kwargs)
+        _StreamBase.__init__(self, 'duplex', *args, **kwargs)
 
 
-class _SoundFileStreamBase(_BufferedStreamBase):
+class _SoundFileStreamBase(_StreamBase):
     # See SoundFileStream for docstring
     def __init__(self, kind, inpf=None, outf=None, reader=None, writer=None,
                  format=None, subtype=None, endian=None, **kwargs):
@@ -969,7 +947,7 @@ Could not determine an appropriate default subtype for '{0}' output file format\
         else:
             self.out_fh = self._outf
 
-    # Default handler for writing input from a BufferedStream to a SoundFile
+    # Default handler for writing input from a Stream to a SoundFile
     # object
     @staticmethod
     def _soundfilewriter(stream, rxbuff):
@@ -1006,7 +984,7 @@ Could not determine an appropriate default subtype for '{0}' output file format\
                 _time.sleep(sleeptime)
 
     # Default handler for reading input from a SoundFile object and writing it
-    # to a BufferedStream
+    # to a Stream
     @staticmethod
     def _soundfilereader(stream, txbuff):
         if stream.rxbuff is not None:
@@ -1054,8 +1032,7 @@ class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
     """
 
     def __init__(self, outf, **kwargs):
-        super(SoundFileInputStream, self).__init__('input', outf=outf,
-                                                   **kwargs)
+        super(SoundFileInputStream, self).__init__('input', outf=outf, **kwargs)
 
 
 class SoundFileOutputStream(_SoundFileStreamBase):
@@ -1099,12 +1076,12 @@ class SoundFileStream(SoundFileInputStream, SoundFileOutputStream):
         Parameters to pass to SoundFile constructor(s). Accepts pairs to allow
         different parameters for input and output.
     reader, writer, kind, blocksize, **kwargs
-        Additional parameters to pass to _BufferedStreamBase.
+        Additional parameters to pass to _StreamBase.
     """
 
     def __init__(self, inpf=None, outf=None, buffersize=_PA_BUFFERSIZE, **kwargs):
         # If you're not using soundfiles for the input or the output,
-        # then you should probably be using the BufferedStream class
+        # then you should probably be using the Stream class
         if inpf is None and outf is None:
             raise ValueError("No input or output file given.")
 
@@ -1121,7 +1098,7 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
     Parameters
     ------------
     chunksize, overlap, always_2d, out
-        See :meth:`BufferedStream.chunks` for description.
+        See :meth:`Stream.chunks` for description.
     inpf : SoundFile compatible input, optional
         Optional input stimuli.
 
@@ -1129,14 +1106,14 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
     -----------------
     streamclass : object
         Base class to use. By default the streamclass will be one of
-        BufferedInputStream, BufferedStream or SoundFileStream depending
+        InputStream, Stream or SoundFileStream depending
         on whether an input file and/or `writer` argument was supplied.
     **kwargs
         Additional arguments to pass to base stream class.
 
     See Also
     --------
-    :meth:`BufferedInputStream.chunks`, :meth:`BufferedStream.chunks`
+    :meth:`InputStream.chunks`, :meth:`Stream.chunks`
 
     Yields
     -------
@@ -1147,14 +1124,13 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
         if inpf is not None:
             stream = SoundFileStream(inpf, **kwargs)
         elif kwargs.get('writer', None) is not None:
-            stream = BufferedStream(**kwargs)
+            stream = Stream(**kwargs)
         else:
-            stream = BufferedInputStream(**kwargs)
+            stream = InputStream(**kwargs)
     elif inpf is None:
         stream = streamclass(**kwargs)
     else:
         stream = streamclass(inpf, **kwargs)
-
     stream._autoclose = True
     return stream.chunks(chunksize, overlap, always_2d, out)
 
@@ -1171,7 +1147,7 @@ def _SoundFileStreamFactory(inpf=None, outf=None, **kwargs):
         Streamer = SoundFileInputStream
         kind = 'output'; ioargs = (outf,)
     else:
-        raise SystemExit("No input or output selected.")
+        raise ValueError("At least one of {inpf, outf} must be specified.")
 
     return Streamer(*ioargs, **kwargs), kind
 
@@ -1181,6 +1157,7 @@ def _get_parser(parser=None):
 
     if parser is None:
         parser = ArgumentParser(formatter_class=RawDescriptionHelpFormatter,
+                                add_help=False,
                                 fromfile_prefix_chars='@', usage=__usage__,
                                 description='''\
 Cross platform audio playback and capture.''')
@@ -1208,15 +1185,13 @@ Cross platform audio playback and capture.''')
         assert x > 0, "Must be a positive value."
         return x
 
-    parser.add_argument("input", type=lambda x: None if x == 'null'[:min(3, len(x))] else x,
+    parser.add_argument("input", type=lambda x: None if x == 'null'[:max(3, len(x))] else x,
         help='''\
-Input audio file. Use the special designator 'nul' or 'null' for recording only. A
-single dash '-' may be used to read from STDIN.''')
+Playback audio file. Use dash '-' to read from STDIN. Use 'null' or 'nul' for no input.''')
 
-    parser.add_argument("output", type=lambda x: None if x == 'null'[:min(3, len(x))] else x,
+    parser.add_argument("output", type=lambda x: None if x == 'null'[:max(3, len(x))] else x,
         help='''\
-Output audio file. Use the special designator 'nul' or 'null' for playback only. A
-single dash '-' may be used to write to STDOUT.''')
+Output file for recording. Use dash '-' to write to STDOUT. Use 'null' or 'nul' for no output.''')
 
 #     parser.add_argument("--loop", default=False, nargs='?', metavar='n',
 #                         const=True, type=int,
@@ -1224,56 +1199,63 @@ single dash '-' may be used to write to STDOUT.''')
 # Replay the playback file n times. If no argument is specified, playback will
 # loop infinitely. Does nothing if there is no playback.''')
 
-    parser.add_argument("-l", action=ListStreamsAction, nargs=0,
+    genopts = parser.add_argument_group("general options")
+
+    genopts.add_argument("-h", "--help", action="help", 
+        help="Show this help message and exit.")
+
+    genopts.add_argument("-l", "--list", action=ListStreamsAction, nargs=0,
         help="List available audio device streams.")
 
-    parser.add_argument("--buffersize", type=possizetype,
+    genopts.add_argument("-q", "--quiet", action='store_true', default=False,
+        help="Don't print any status information.")
+
+    genopts.add_argument("--version", action='version', version='%(prog)s ' + __version__,
+        help="Print version and exit.")
+
+    propts = parser.add_argument_group('''\
+playback/record options. (size suffixes supported: k[ilo] K[ibi] m[ega] M[ebi])''')
+
+    propts.add_argument("--buffersize", type=possizetype,
         default=_PA_BUFFERSIZE, help='''\
 File buffering size (in units of frames). Must be a power of 2. Determines the
 maximum amount of buffering for the input/output file(s). Use higher values to
 increase robustness against irregular file i/o behavior. Add a 'K' or 'M'
 suffix to specify size in kibi or mebi units. (Default %(default)d)''')
 
-    parser.add_argument("-p", "--pad", type=sizetype, nargs='?', default=0,
+    propts.add_argument("-n", "--frames", type=sizetype, default=-1, help='''\
+Limit playback/capture to this many frames. If FRAMES is negative (the
+default), then streaming will continue until there is no playback data
+remaining or, if no playback was given, recording will continue
+indefinitely.''')
+
+    propts.add_argument("--offset", type=possizetype, default=0, help='''\
+Drop a number of frames from the start of a recording.''')
+
+    propts.add_argument("-p", "--pad", type=sizetype, nargs='?', default=0,
         const=-1, help='''\
 Pad the input with frames of zeros. (Useful to avoid truncating full duplex
 recording). If PAD is negative then padding is chosen so that the total
 playback length matches --frames (or, if frames is negative, zero padding will
 be added indefinitely).''')
 
-    parser.add_argument("-o", "--offset", type=possizetype, default=0, help='''\
-Drop a number of frames from the start of a recording.''')
+    devopts = parser.add_argument_group("audio device options")
 
-    parser.add_argument("-n", "--frames", type=sizetype, default=-1, help='''\
-Limit playback/capture to this many frames. If FRAMES is negative (the
-default), then streaming will continue until there is no playback data
-remaining or, if no playback was given, recording will continue
-indefinitely.''')
+    devopts.add_argument("-b", "--blocksize", type=possizetype, help='''\
+PortAudio buffer size in units of frames. If zero or not specified
+(Recommended), backend will decide an optimal size. ''')
 
-    parser.add_argument("-q", "--quiet", action='store_true', default=False,
-        help="Don't print any status information.")
-
-#     parser.add_argument("-x", "--abort-on-xruns", type=bool, default=False,
-#         help='''\
-# Stop streaming if an xrun occurs.''')
-
-    devopts = parser.add_argument_group("I/O device stream options")
+    devopts.add_argument("-c", "--channels", type=int, action='append',
+        help="Number of channels.")
 
     devopts.add_argument("-d", "--device", type=dvctype, action='append',
         help='''\
 Audio device name expression or index number. Defaults to the
 PortAudio default device.''')
 
-    devopts.add_argument("-b", "--blocksize", type=possizetype, help='''\
-PortAudio buffer size in units of frames. If zero or not specified, backend
-will decide an optimal size.''')
-
     devopts.add_argument("-f", "--format", dest='dtype',
         choices=_sd._sampleformats.keys(), help='''\
 Sample format of device I/O stream.''')
-
-    devopts.add_argument("-c", "--channels", type=int, action='append',
-        help="Number of channels.")
 
     devopts.add_argument("-r", "--rate", dest='samplerate',
         type=lambda x: int(float(x[:-1]) * 1000) if x.endswith('k') else int(x),
@@ -1281,7 +1263,7 @@ Sample format of device I/O stream.''')
 Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
 
     fileopts = parser.add_argument_group('''\
-Audio file formatting options. Options accept single values or pairs''')
+audio file formatting options. (options accept single values or pairs)''')
 
     fileopts.add_argument("-t", dest="file_type", type=str.upper, action='append',
         choices=_sf.available_formats().keys(), help='''\
@@ -1292,8 +1274,8 @@ the file header or extension, but it can be manually specified here.''')
         choices=_sf.available_subtypes(), help='''\
 Sample format encoding. Note for output file encodings: for file types that
 support PCM or FLOAT format, pastream will automatically choose the sample
-format that best matches the output device stream; otherwise, the subtype is
-required.''')
+format that most closely matches the output device stream; for other file
+types, the subtype is required.''')
 
     fileopts.add_argument("--endian", type=str.lower, action='append',
         choices=['file', 'big', 'little'], help="Sample endianness.")
@@ -1302,23 +1284,27 @@ required.''')
 
 
 def _main(argv=None):
-    import os
-    from itertools import chain
+    import os, traceback
     if argv is None: argv = _sys.argv[1:]
     parser = _get_parser()
     args = parser.parse_args(argv)
 
     unpack = lambda x: x[0] if x and len(x) == 1 else x
-    
-    stream, kind = _SoundFileStreamFactory(args.input, args.output,
-                        samplerate=args.samplerate, blocksize=args.blocksize,
-                        buffersize=args.buffersize, frames=args.frames,
-                        pad=args.pad, offset=args.offset,
-                        endian=unpack(args.endian),
-                        subtype=unpack(args.encoding),
-                        format=unpack(args.file_type),
-                        device=unpack(args.device),
-                        channels=unpack(args.channels), dtype=args.dtype)
+
+    try:
+        stream, kind = _SoundFileStreamFactory(args.input, args.output,
+                            samplerate=args.samplerate, blocksize=args.blocksize,
+                            buffersize=args.buffersize, frames=args.frames,
+                            pad=args.pad, offset=args.offset,
+                            endian=unpack(args.endian),
+                            subtype=unpack(args.encoding),
+                            format=unpack(args.file_type),
+                            device=unpack(args.device),
+                            channels=unpack(args.channels), dtype=args.dtype)
+    except ValueError as exc:
+        traceback.print_exc()
+        parser.print_usage()
+        parser.exit(255)
 
     nullinp = nullout = None
     if stream.inp_fh is None:
@@ -1329,7 +1315,7 @@ def _main(argv=None):
         _sys.stdout = open(os.devnull, 'w')
 
     statline = "\r{:8.3f}s {:10d} frames processed, {:>8s} frames free, " \
-               "{:>8s} frames queued ({:d} xruns, {:f}% load)\r"
+               "{:>8s} frames queued ({:d} xruns, {:6.2f}% load)\r"
     print("<--", stream.inp_fh if stream.inp_fh is not None else 'null')
     print(["<->", "-->", "<--"][['duplex', 'input', 'output'].index(kind)], stream)
     print("-->", stream.out_fh if stream.out_fh is not None else 'null')
