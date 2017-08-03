@@ -1,12 +1,6 @@
 import os
 from setuptools import setup
-from setuptools.dist import Distribution
 
-class BinaryDistribution(Distribution):
-    def is_pure(self):
-        return False
-    def has_ext_modules(self):
-        return True
 
 __version__ = 'unknown'
 
@@ -29,6 +23,7 @@ setup(name='pastream',
       long_description=open(os.path.join(dirname, 'README.rst')).read(),
       entry_points={'console_scripts': ['pastream = pastream:_main']},
       cffi_modules=["build_pastream.py:ffibuilder"],
+      setup_requires=['cffi>=1.4.0'],
       install_requires=[
           'cffi>=1.0.0',
           'soundfile>=0.9.0',
@@ -45,5 +40,5 @@ setup(name='pastream',
           'Topic :: Multimedia :: Sound/Audio'
       ],
       include_package_data=True,
-      zip_safe=False,
-      distclass=BinaryDistribution)
+      zip_safe=False)
+

@@ -36,7 +36,7 @@ import weakref as _weakref
 from _py_pastream import ffi as _ffi, lib as _lib
 
 
-__version__ = '0.0.6'
+__version__ = '0.0.6.post0'
 __usage__ = "%(prog)s [options] [input] [output]"
 
 # Set a default size for the audio callback ring buffer
