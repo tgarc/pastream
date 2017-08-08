@@ -86,7 +86,7 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
     inpf2 = sf.SoundFile(inp_fh.name.name)
 
     inp_fh.seek(0)
-    with ps.SoundFileStream(inp_fh, **devargs) as stream:
+    with ps.SoundFileDuplexStream(inp_fh, **devargs) as stream:
         delay = -1
         found_delay = False
         unsigned_dtype = 'u%d'%stream.samplesize[1]
@@ -201,7 +201,7 @@ def test_soundfilestream_loopback(random_soundfile_input, devargs):
     devargs['dtype'] = dtype
 
     outf = tempfile.TemporaryFile()
-    with ps.SoundFileStream(inp_fh, outf, format='wav', **devargs) as stream:
+    with ps.SoundFileDuplexStream(inp_fh, outf, format='wav', **devargs) as stream:
         stream.start()
         stream.wait()
 
@@ -245,7 +245,7 @@ def test_pad(random_soundfile_input, devargs):
     assert ntrunc == 0
 
 def test_stream_replay(devargs):
-    with ps.Stream(buffersize=65536, **devargs) as stream:
+    with ps.DuplexStream(buffersize=65536, **devargs) as stream:
         data = bytearray(len(stream.txbuff)*stream.txbuff.elementsize)
 
         # Start and let stream finish
@@ -275,7 +275,7 @@ class MyException(Exception):
     pass
 
 def test_deferred_exception_handling(devargs):
-    stream = ps.Stream(buffersize=8192, **devargs)
+    stream = ps.DuplexStream(buffersize=8192, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
@@ -288,7 +288,7 @@ def test_threaded_write_deferred_exception_handling(devargs):
     def writer(stream, ringbuff):
         raise MyException(txmsg)
 
-    stream = ps.Stream(buffersize=8192, writer=writer, **devargs)
+    stream = ps.DuplexStream(buffersize=8192, writer=writer, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
@@ -302,7 +302,7 @@ def test_threaded_read_deferred_exception_handling(devargs):
         raise MyException(rxmsg)
 
     # A reader exception should also stop the stream
-    stream = ps.Stream(buffersize=8192, reader=reader, **devargs)
+    stream = ps.DuplexStream(buffersize=8192, reader=reader, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(MyException) as excinfo:
         with stream:
@@ -311,7 +311,7 @@ def test_threaded_read_deferred_exception_handling(devargs):
     assert str(excinfo.value) == rxmsg
 
 def test_frames_raises_underflow(devargs):
-    stream = ps.Stream(buffersize=8192, frames=9000, **devargs)
+    stream = ps.DuplexStream(buffersize=8192, frames=9000, **devargs)
     stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
     with pytest.raises(ps.BufferEmpty) as excinfo:
         with stream:
