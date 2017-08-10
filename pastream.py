@@ -34,7 +34,7 @@ import sounddevice as _sd
 import soundfile as _sf
 import weakref as _weakref
 from _py_pastream import ffi as _ffi, lib as _lib
-from pa_ringbuffer import init as _ringbuffer_init 
+from pa_ringbuffer import init as _ringbuffer_init
 
 
 __version__ = '0.0.6.post0'
@@ -669,7 +669,6 @@ class _SoundFileStreamBase(_StreamBase):
     # See SoundFileStream for docstring
     def __init__(self, kind, inpf=None, outf=None, reader=None, writer=None,
                  format=None, subtype=None, endian=None, **kwargs):
-        dtype = kwargs.pop('dtype', None)
         channels = kwargs.pop('channels', None)
         samplerate = kwargs.pop('samplerate', None)
         if kind == 'duplex':
@@ -677,17 +676,11 @@ class _SoundFileStreamBase(_StreamBase):
             isubtype, osubtype = _sd._split(subtype)
             iendian, oendian = _sd._split(endian)
             ichannels, ochannels = _sd._split(channels)
-            idtype, odtype = _sd._split(dtype)
-            iextra, oextra = _sd._split(kwargs.get('extra_settings', None))
-            idevice, odevice = _sd._split(kwargs.get('device', None))
         else:
             iformat = oformat = format
             isubtype = osubtype = subtype
             iendian = oendian = endian
             ichannels = ochannels = _sd._split(channels)
-            idtype = odtype = _sd._split(dtype)
-            idevice = odevice = _sd._split(kwargs.get('device', None))
-            iextra = oextra = _sd._split(kwargs.get('extra_settings', None))
         raw_output = oformat and oformat.lower() == 'raw'
 
         # At this point we don't care what 'kind' the stream is, only whether
@@ -701,29 +694,14 @@ class _SoundFileStreamBase(_StreamBase):
                 self.inp_fh = self._inpf
             elif not raw_output:
                 self.inp_fh = _sf.SoundFile(self._inpf)
+            if not raw_output:
                 if samplerate is None:
                     samplerate = self.inp_fh.samplerate
                 if ochannels is None:
                     if kind == 'duplex':
                         channels = (ichannels or self.inp_fh.channels, self.inp_fh.channels)
-                    elif kind == 'output':
+                    else:
                         channels = self.inp_fh.channels
-                if odtype is None:
-                    subtype = self.inp_fh.subtype.lower()
-                    if subtype == 'float':
-                        odtype = 'float32'
-                    elif 'pcm' in subtype:
-                        odtype = (odtype[0] if 'u' in subtype else '') + 'int' + subtype.split('_')[1].lstrip('us')
-                    if odtype is not None:
-                        try:
-                            _sd.check_output_settings(odevice, ochannels, odtype, oextra, samplerate)
-                        except _sd.PortAudioError:
-                            pass # warn
-                        else:
-                            if kind == 'duplex':
-                                dtype = (idtype or odtype, odtype)
-                            elif kind == 'output':
-                                dtype = idtype
         else:
             self.inp_fh = self._inpf
 
@@ -736,43 +714,43 @@ class _SoundFileStreamBase(_StreamBase):
 
         super(_SoundFileStreamBase, self).__init__(kind, reader=reader,
             writer=writer, samplerate=samplerate, channels=channels,
-            dtype=dtype, **kwargs)
+            **kwargs)
 
-        # For raw input file, assume the format corresponds to the device
+        # For raw playback file, assume the format corresponds to the device
         # parameters
         if raw_output:
             ochannels = kind == 'duplex' and self.channels[1] or self.channels
             self.inp_fh = _sf.SoundFile(self._inpf, 'r', int(self.samplerate),
                               ochannels, osubtype, oendian, 'raw')
 
-        # Try and determine the file extension here; we need to know it if we
+        # Try and determine the file extension here; we need to know if we
         # want to try and set a default subtype for the output
-        if not oformat:
+        if not iformat:
             try:
-                oformat = getattr(outf, 'name', outf).rsplit('.', 1)[1].lower()
+                iformat = getattr(outf, 'name', outf).rsplit('.', 1)[1].lower()
             except (AttributeError, IndexError):
                 pass
 
         # If the output file hasn't already been opened, we open it here using
-        # the input file and output stream settings, plus any user supplied
-        # arguments
+        # the input file and stream settings, plus any user supplied arguments
         if not (self._outf is None or isinstance(self._outf, _sf.SoundFile)):
             # For those file formats which support PCM or FLOAT, use the device
             # samplesize to make a guess at a default subtype
             idtype = self.dtype; issize = self.samplesize; ichannels = self.channels
             if kind == 'duplex':
                 ichannels = ichannels[0]; idtype = idtype[0]; issize = issize[0]
-            if 'float' in idtype: subtype = 'float'
-            else:                 subtype = 'pcm_{0}'.format(8 * issize)
+            if idtype == 'float32' and _sf.check_format(iformat, 'float', iendian):
+                subtype = 'float'
+            else:
+                subtype = 'pcm_{0}'.format(8 * issize)
             if isubtype is None and iformat:
-                if _sf.check_format(iformat, subtype, iendian):
-                    isubtype = subtype
-                else:
-                    raise ValueError('''\
-Could not determine an appropriate default subtype for '{0}' recording file
-format: Please specify subtype'''.format(iformat))
+                if not _sf.check_format(iformat, subtype, iendian):
+                    raise ValueError("Could not map stream datatype '{0}' to "
+                        "an appropriate subtype for '{1}'; please specify"\
+                        .format(idtype, iformat))
+                isubtype = subtype
             self.out_fh = _sf.SoundFile(self._outf, 'w', int(self.samplerate),
-                              ichannels, subtype, iendian, iformat)
+                              ichannels, isubtype, iendian, iformat)
         else:
             self.out_fh = self._outf
 
@@ -982,6 +960,7 @@ def _SoundFileStreamFactory(inpf=None, outf=None, **kwargs):
 
 
 def _get_parser(parser=None):
+    import shlex
     from argparse import Action, ArgumentParser, RawDescriptionHelpFormatter
 
     if parser is None:
@@ -1013,6 +992,11 @@ Cross platform audio playback and capture.''')
         x = sizetype(x)
         assert x > 0, "Must be a positive value."
         return x
+
+    def csvtype(arg, type=None):
+        csvsplit = shlex.shlex(arg, posix=True)
+        csvsplit.whitespace = ','; csvsplit.whitespace_split = True
+        return list(map(type or str, csvsplit))
 
     parser.add_argument("input", type=lambda x: None if x == 'null'[:max(3, len(x))] else x,
         help='''\
@@ -1074,16 +1058,15 @@ be added indefinitely).''')
 PortAudio buffer size in units of frames. If zero or not specified
 (the recommended setting), backend will decide an optimal size. ''')
 
-    devopts.add_argument("-c", "--channels", type=int, nargs='+',
-        help="Number of channels.")
+    devopts.add_argument("-c", "--channels", type=int, nargs='+', help="Number of channels.")
 
     devopts.add_argument("-d", "--device", type=dvctype, nargs='+',
         help='''\
 Audio device name expression(s) or index number(s). Defaults to the
 PortAudio default device(s).''')
 
-    devopts.add_argument("-f", "--format", metavar="format", dest='dtype', nargs='+',
-        choices=_sd._sampleformats.keys(), help='''\
+    devopts.add_argument("-f", "--format", metavar="format", dest='dtype',
+        nargs='+', choices=_sd._sampleformats.keys(), help='''\
 Sample format(s) of audio device stream. Must be one of {%(choices)s}.''')
 
     devopts.add_argument("-r", "--rate", dest='samplerate', type=possizetype,
@@ -1094,21 +1077,21 @@ Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
 audio file formatting options. (options accept single values or pairs)''')
 
     fileopts.add_argument("-t", "--file_type", metavar="file_type",
-        type=str.upper, nargs='+',
-        choices=_sf.available_formats().keys(), help='''\
-Audio file type(s). (Required for RAW files). Typically this is determined from
-the file header or extension, but it can be manually specified here. Must be one of {%(choices)s}.''')
+        type=str.upper, nargs='+', choices=_sf.available_formats().keys(), help='''\
+Audio file type(s). (Required for RAW files). Typically this is determined
+from the file header or extension, but it can be manually specified here. Must
+be one of {%(choices)s}.''')
 
     fileopts.add_argument("-e", "--encoding", metavar="encoding",
-        type=str.upper, nargs='+',
-        choices=_sf.available_subtypes(), help='''\
+        type=str.upper, nargs='+', choices=_sf.available_subtypes(), help='''\
 Sample format encoding(s). Note for output file encodings: for file types that
 support PCM or FLOAT format, pastream will automatically choose the sample
 format that most closely matches the output device stream; for other file
 types, the subtype is required. Must be one of {%(choices)s}.''')
 
     fileopts.add_argument("--endian", metavar="endian", type=str.lower, nargs='+',
-        choices=['file', 'big', 'little'], help="Sample endianness. Must be one of {%(choices)s}.")
+        choices=['file', 'big', 'little'], help='''\
+Sample endianness. Must be one of {%(choices)s}.''')
 
     return parser
 
