@@ -86,7 +86,7 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
     inpf2 = sf.SoundFile(inp_fh.name.name)
 
     inp_fh.seek(0)
-    with ps.SoundFileDuplexStream(inp_fh, **devargs) as stream:
+    with ps.SoundFileDuplexStream(outf=inp_fh, **devargs) as stream:
         delay = -1
         found_delay = False
         unsigned_dtype = 'u%d'%stream.samplesize[1]
@@ -201,7 +201,7 @@ def test_soundfilestream_loopback(random_soundfile_input, devargs):
     devargs['dtype'] = dtype
 
     outf = tempfile.TemporaryFile()
-    with ps.SoundFileDuplexStream(inp_fh, outf, format='wav', **devargs) as stream:
+    with ps.SoundFileDuplexStream(outf, inp_fh, format='wav', **devargs) as stream:
         stream.start()
         stream.wait()
 

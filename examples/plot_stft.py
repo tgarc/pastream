@@ -41,7 +41,7 @@ try:               subtype = sys.argv[4]
 except IndexError: subtype = None
 
 if inpf is not None:
-    cls = ps.SoundFileStream
+    cls = ps.SoundFileDuplexStream
     kwargs = dict(format=format, subtype=subtype, inpf=inpf)
 else:
     cls = ps.InputStream; kwargs = {}

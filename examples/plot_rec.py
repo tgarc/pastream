@@ -35,7 +35,7 @@ def draw(data):
 try:               dev = int(sys.argv[1])
 except IndexError: dev = None
 except ValueError: dev = sys.argv[1]
-    
+
 try:               inpf = int(sys.argv[2])
 except IndexError: inpf = None
 except ValueError: inpf = sys.argv[2]
@@ -47,7 +47,7 @@ try:               subtype = sys.argv[4]
 except IndexError: subtype = None
 
 if inpf is not None:
-    cls = ps.SoundFileStream
+    cls = ps.SoundFileDuplexStream
     kwargs = dict(format=format, subtype=subtype, inpf=inpf)
 else:
     cls = ps.InputStream; kwargs = {}

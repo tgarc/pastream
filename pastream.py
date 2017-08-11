@@ -40,6 +40,9 @@ from pa_ringbuffer import init as _ringbuffer_init
 __version__ = '0.0.6.post0'
 __usage__ = "%(prog)s [options] [input] [output]"
 
+
+LOOP = False
+
 # Set a default size for the audio callback ring buffer
 _PA_BUFFERSIZE = 1 << 16
 
@@ -68,7 +71,7 @@ RingBuffer = _ringbuffer_init(_ffi, _lib)
 
 # TODO?: add option to do asynchronous exception raising
 class _StreamBase(_sd._StreamBase):
-    # See Stream for docstring
+    # See DuplexStream for docstring
     def __init__(self, kind, device=None, samplerate=None, channels=None,
                  dtype=None, frames=-1, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
@@ -665,6 +668,41 @@ class DuplexStream(InputStream, OutputStream):
         _StreamBase.__init__(self, 'duplex', *args, **kwargs)
 
 
+# Helper function for SoundFileStream classes
+def _soundfile_from_stream(stream, kind, file, mode, **kwargs):
+    # Try and determine the file extension here; we need to know if we
+    # want to try and set a default subtype for the file
+    fformat = kwargs.pop('format', None)
+    if not fformat:
+        try:
+            fformat = getattr(file, 'name', file).rsplit('.', 1)[1].lower()
+        except (AttributeError, IndexError):
+            fformat = None
+
+    subtype = kwargs.pop('subtype', None)
+    if not subtype:
+        # For those file formats which support PCM or FLOAT, use the device
+        # samplesize to make a guess at a default subtype
+        dtype = stream.dtype; ssize = stream.samplesize; channels = stream.channels
+        if kind == 'duplex':
+            channels = channels[0]; dtype = dtype[0]; ssize = ssize[0]
+        if dtype == 'float32' and _sf.check_format(fformat, 'float', kwargs.get('endian', None)):
+            subtype = 'float'
+        else:
+            subtype = 'pcm_{0}'.format(8 * ssize)
+        if fformat and not _sf.check_format(fformat, subtype, kwargs.get('endian', None)):
+            raise ValueError("Could not map stream datatype '{0}' to "
+                "an appropriate subtype for '{1}' format; please specify"\
+                .format(dtype, fformat))
+
+    if 'channels' not in kwargs:
+        kwargs['channels'] = kind == 'duplex' and stream.channels['w' in mode] \
+            or stream.channels
+
+    return _sf.SoundFile(file, mode, int(stream.samplerate), subtype=subtype,
+        format=fformat, **kwargs)
+
+
 class _SoundFileStreamBase(_StreamBase):
     # See SoundFileStream for docstring
     def __init__(self, kind, inpf=None, outf=None, reader=None, writer=None,
@@ -680,84 +718,75 @@ class _SoundFileStreamBase(_StreamBase):
             iformat = oformat = format
             isubtype = osubtype = subtype
             iendian = oendian = endian
-            ichannels = ochannels = _sd._split(channels)
-        raw_output = oformat and oformat.lower() == 'raw'
+            ichannels = ochannels = channels
+        raw_output = oformat and oformat.lower() == 'raw' or False
 
-        # At this point we don't care what 'kind' the stream is, only whether
-        # the input/output is None which determines whether reader/writer
-        # functions should be registered
-        self._inpf = inpf
-        if self._inpf is not None:
-            if writer is None:
-                writer = self._soundfilereader
-            if isinstance(self._inpf, _sf.SoundFile):
-                self.inp_fh = self._inpf
-            elif not raw_output:
-                self.inp_fh = _sf.SoundFile(self._inpf)
-            if not raw_output:
-                if samplerate is None:
-                    samplerate = self.inp_fh.samplerate
-                if ochannels is None:
-                    if kind == 'duplex':
-                        channels = (ichannels or self.inp_fh.channels, self.inp_fh.channels)
-                    else:
-                        channels = self.inp_fh.channels
-        else:
-            self.inp_fh = self._inpf
-
-        # We need to set the reader here; output file parameters will be known
-        # once we open the stream
         self._outf = outf
-        if outf is not None and reader is None:
-            reader = self._soundfilewriter
-        self.out_fh = None
+        if outf is not None:
+            if writer is None:
+                writer = self._soundfileplayer
+            if not oformat and not raw_output:
+                try:
+                    raw_output = getattr(outf, 'name', outf)\
+                        .rsplit('.', 1)[1].lower() == 'raw'
+                except (AttributeError, IndexError):
+                    pass
+            if isinstance(outf, _sf.SoundFile):
+                self.out_fh = outf
+            elif not raw_output:
+                self.out_fh = _sf.SoundFile(outf)
+            elif not (samplerate and ochannels and osubtype):
+                raise ValueError(
+                    "samplerate, channels, and subtype must be specified for "
+                    "RAW playback files")
+            if samplerate is None:
+                samplerate = self.out_fh.samplerate
+            if ochannels is None:
+                ochannels = self.out_fh.channels
+                if kind == 'duplex':
+                    channels = (ichannels or self.out_fh.channels, ochannels)
+                else:
+                    channels = self.out_fh.channels
+        else:
+            self.out_fh = outf
+
+        if isinstance(inpf, _sf.SoundFile):
+            if samplerate is None:
+                samplerate = inpf.samplerate
+            if ichannels is None:
+                if kind == 'duplex':
+                    channels = (inpf.channels, ochannels)
+                else:
+                    channels = inpf.channels
+
+        # We need to set the reader here; recording file parameters will be known
+        # once we open the stream
+        self._inpf = inpf
+        self.inp_fh = None
+        if inpf is not None and reader is None:
+            reader = self._soundfilerecorder
 
         super(_SoundFileStreamBase, self).__init__(kind, reader=reader,
             writer=writer, samplerate=samplerate, channels=channels,
             **kwargs)
 
-        # For raw playback file, assume the format corresponds to the device
-        # parameters
         if raw_output:
-            ochannels = kind == 'duplex' and self.channels[1] or self.channels
-            self.inp_fh = _sf.SoundFile(self._inpf, 'r', int(self.samplerate),
-                              ochannels, osubtype, oendian, 'raw')
+            self.out_fh = _soundfile_from_stream(self, kind, outf, mode='r',
+                subtype=osubtype, format='raw', endian=oendian)
 
-        # Try and determine the file extension here; we need to know if we
-        # want to try and set a default subtype for the output
-        if not iformat:
-            try:
-                iformat = getattr(outf, 'name', outf).rsplit('.', 1)[1].lower()
-            except (AttributeError, IndexError):
-                pass
-
-        # If the output file hasn't already been opened, we open it here using
+        # If the recording file hasn't already been opened, we open it here using
         # the input file and stream settings, plus any user supplied arguments
-        if not (self._outf is None or isinstance(self._outf, _sf.SoundFile)):
-            # For those file formats which support PCM or FLOAT, use the device
-            # samplesize to make a guess at a default subtype
-            idtype = self.dtype; issize = self.samplesize; ichannels = self.channels
-            if kind == 'duplex':
-                ichannels = ichannels[0]; idtype = idtype[0]; issize = issize[0]
-            if idtype == 'float32' and _sf.check_format(iformat, 'float', iendian):
-                subtype = 'float'
-            else:
-                subtype = 'pcm_{0}'.format(8 * issize)
-            if isubtype is None and iformat:
-                if not _sf.check_format(iformat, subtype, iendian):
-                    raise ValueError("Could not map stream datatype '{0}' to "
-                        "an appropriate subtype for '{1}'; please specify"\
-                        .format(idtype, iformat))
-                isubtype = subtype
-            self.out_fh = _sf.SoundFile(self._outf, 'w', int(self.samplerate),
-                              ichannels, isubtype, iendian, iformat)
+        if inpf is not None and not isinstance(inpf, _sf.SoundFile):
+            self.inp_fh = _soundfile_from_stream(self, kind, inpf, mode='w',
+                subtype=isubtype, format=iformat, endian=iendian)
         else:
-            self.out_fh = self._outf
+            self.inp_fh = self._inpf
 
     # Default handler for writing input from a Stream to a SoundFile
     # object
     @staticmethod
-    def _soundfilewriter(stream, rxbuff):
+    def _soundfilerecorder(stream, rxbuff):
+        inp_fh = stream.inp_fh
         if stream.txbuff is not None:
             dtype = stream.dtype[0]
         else:
@@ -781,9 +810,9 @@ class _SoundFileStreamBase(_StreamBase):
                 continue
 
             frames, buffregn1, buffregn2 = rxbuff.get_read_buffers(frames)
-            stream.out_fh.buffer_write(buffregn1, dtype=dtype)
+            inp_fh.buffer_write(buffregn1, dtype=dtype)
             if len(buffregn2):
-                stream.out_fh.buffer_write(buffregn2, dtype=dtype)
+                inp_fh.buffer_write(buffregn2, dtype=dtype)
             rxbuff.advance_read_index(frames)
 
             sleeptime = (chunksize - rxbuff.read_available) / stream.samplerate
@@ -793,7 +822,8 @@ class _SoundFileStreamBase(_StreamBase):
     # Default handler for reading input from a SoundFile object and writing it
     # to a Stream
     @staticmethod
-    def _soundfilereader(stream, txbuff):
+    def _soundfileplayer(stream, txbuff):
+        out_fh = stream.out_fh
         if stream.rxbuff is not None:
             dtype = stream.dtype[1]
         else:
@@ -811,13 +841,26 @@ class _SoundFileStreamBase(_StreamBase):
                 continue
 
             frames, buffregn1, buffregn2 = txbuff.get_write_buffers(frames)
-            readframes = stream.inp_fh.buffer_read_into(buffregn1, dtype=dtype)
+            readframes = out_fh.buffer_read_into(buffregn1, dtype=dtype)
             if len(buffregn2):
-                readframes += stream.inp_fh.buffer_read_into(buffregn2, dtype=dtype)
-            txbuff.advance_write_index(readframes)
+                readframes2 = out_fh.buffer_read_into(buffregn2, dtype=dtype)
+            else:
+                readframes2 = 0
+            readframes += readframes2
 
             # exit if we've reached end of file
-            if readframes < frames: break
+            if readframes < frames:
+                if LOOP:
+                    out_fh.seek(0)
+                    if readframes < len(buffregn1) * txbuff.elementsize:
+                        readframes += out_fh.buffer_read_into(buffregn1 + readframes*txbuff.elementsize, dtype=dtype)
+                    if readframes2 < len(buffregn2) * txbuff.elementsize:
+                        readframes2 += out_fh.buffer_read_into(buffregn2 + readframes2*txbuff.elementsize, dtype=dtype)
+                    readframes += readframes2
+                txbuff.advance_write_index(readframes)
+                if not LOOP:
+                    break
+
             sleeptime = (chunksize - txbuff.write_available) / stream.samplerate
             if sleeptime > 0:
                 _time.sleep(sleeptime)
@@ -838,8 +881,8 @@ class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
     parameters.
     """
 
-    def __init__(self, outf, **kwargs):
-        super(SoundFileInputStream, self).__init__('input', outf=outf, **kwargs)
+    def __init__(self, inpf, **kwargs):
+        super(SoundFileInputStream, self).__init__('input', inpf=inpf, **kwargs)
 
 
 class SoundFileOutputStream(_SoundFileStreamBase):
@@ -848,8 +891,8 @@ class SoundFileOutputStream(_SoundFileStreamBase):
     parameters.
     """
 
-    def __init__(self, inpf, buffersize=_PA_BUFFERSIZE, **kwargs):
-        super(SoundFileOutputStream, self).__init__('output', inpf=inpf,
+    def __init__(self, outf, buffersize=_PA_BUFFERSIZE, **kwargs):
+        super(SoundFileOutputStream, self).__init__('output', outf=outf,
             buffersize=buffersize, **kwargs)
 
 
@@ -862,20 +905,21 @@ class SoundFileDuplexStream(SoundFileInputStream, SoundFileOutputStream):
 
     Parameters
     ----------
-    inpf : SoundFile compatible input
-        Input file to stream to audio device. The input file will determine the
-        samplerate and number of channels for the audio stream.
-    outf : SoundFile compatible input
-        Output file to capture data from audio device. If a SoundFile is not
-        passed, the output file parameters will be determined from the output
+    inpf : SoundFile, str, or file-like
+        Input file to capture data from audio device. If a SoundFile is not
+        passed, the input file parameters will be determined from the input
         audio stream.
+
+    outf : SoundFile, str, or file-like
+        Output file to stream to audio device. The output file will determine
+        the samplerate and number of channels for the audio stream.
 
     Attributes
     ------------
     inp_fh : SoundFile
-        The file object to write to the output ring buffer.
-    out_fh : SoundFile
         The file object to capture data from the input ring buffer.
+    out_fh : SoundFile
+        The file object to write to the output ring buffer.
 
     Other Parameters
     ----------------------
@@ -888,7 +932,7 @@ class SoundFileDuplexStream(SoundFileInputStream, SoundFileOutputStream):
 
     def __init__(self, inpf=None, outf=None, buffersize=_PA_BUFFERSIZE, **kwargs):
         # If you're not using soundfiles for the input or the output,
-        # then you should probably be using the Stream class
+        # then you should probably be using the StreamBase class
         if inpf is None and outf is None:
             raise ValueError("No input or output file given.")
 
@@ -897,7 +941,7 @@ class SoundFileDuplexStream(SoundFileInputStream, SoundFileOutputStream):
 
 
 # TODO: add support for generic 'input' which accepts file, buffer, or ndarray
-def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
+def chunks(chunksize=None, overlap=0, always_2d=False, out=None, outf=None,
            streamclass=None, **kwargs):
     """
     Read audio data in iterable chunks from a Portaudio stream.
@@ -905,15 +949,15 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
     Parameters
     ------------
     chunksize, overlap, always_2d, out
-        See :meth:`Stream.chunks` for description.
-    inpf : SoundFile compatible input, optional
-        Optional input stimuli.
+        See :meth:`DuplexStream.chunks` for description.
+    outf : SoundFile compatible input, optional
+        Optional playback file.
 
     Other Parameters
     -----------------
     streamclass : object
         Base class to use. By default the streamclass will be one of
-        InputStream, Stream or SoundFileStream depending
+        InputStream, DuplexStream or SoundFileDuplexStream depending
         on whether an input file and/or `writer` argument was supplied.
     **kwargs
         Additional arguments to pass to base stream class.
@@ -928,16 +972,16 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, inpf=None,
         ndarray or memoryview object with `chunksize` elements.
     """
     if streamclass is None:
-        if inpf is not None:
-            stream = SoundFileDuplexStream(inpf, **kwargs)
+        if outf is not None:
+            stream = SoundFileDuplexStream(outf, **kwargs)
         elif kwargs.get('writer', None) is not None:
             stream = DuplexStream(**kwargs)
         else:
             stream = InputStream(**kwargs)
-    elif inpf is None:
+    elif outf is None:
         stream = streamclass(**kwargs)
     else:
-        stream = streamclass(inpf, **kwargs)
+        stream = streamclass(outf, **kwargs)
     stream._autoclose = True
     return stream.chunks(chunksize, overlap, always_2d, out)
 
@@ -947,12 +991,12 @@ def _SoundFileStreamFactory(inpf=None, outf=None, **kwargs):
     if inpf is not None and outf is not None:
         Streamer = SoundFileDuplexStream
         kind = 'duplex'; ioargs = (inpf, outf)
-    elif inpf is not None:
-        Streamer = SoundFileOutputStream
-        kind = 'input'; ioargs = (inpf,)
     elif outf is not None:
-        Streamer = SoundFileInputStream
+        Streamer = SoundFileOutputStream
         kind = 'output'; ioargs = (outf,)
+    elif inpf is not None:
+        Streamer = SoundFileInputStream
+        kind = 'input'; ioargs = (inpf,)
     else:
         raise ValueError("At least one of {inpf, outf} must be specified.")
 
@@ -976,6 +1020,7 @@ Cross platform audio playback and capture.''')
             print(_sd.query_devices())
             _sys.exit(0)
 
+
     def dvctype(dvc):
         try:               return int(dvc)
         except ValueError: return dvc
@@ -993,18 +1038,21 @@ Cross platform audio playback and capture.''')
         assert x > 0, "Must be a positive value."
         return x
 
+    def nullortype(x, type=None):
+        return None if not x or x == 'null'[:max(3, len(x))] else (type(x) if type else x)
+
     def csvtype(arg, type=None):
         csvsplit = shlex.shlex(arg, posix=True)
         csvsplit.whitespace = ','; csvsplit.whitespace_split = True
         return list(map(type or str, csvsplit))
 
-    parser.add_argument("input", type=lambda x: None if x == 'null'[:max(3, len(x))] else x,
+    parser.add_argument("input", type=nullortype,
         help='''\
-Playback audio file. Use dash '-' to read from STDIN. Use 'null' or 'nul' for no input.''')
+Playback audio file. Use dash '-' to read from STDIN. Use 'null' or an empty string "" for record only.''')
 
-    parser.add_argument("output", type=lambda x: None if x == 'null'[:max(3, len(x))] else x,
+    parser.add_argument("output", type=nullortype,
         help='''\
-Output file for recording. Use dash '-' to write to STDOUT. Use 'null' or 'nul' for no output.''')
+Output file for recording. Use dash '-' to write to STDOUT. Use 'null' or an empty string "" for playback only.''')
 
 #     parser.add_argument("--loop", default=False, nargs='?', metavar='n',
 #                         const=True, type=int,
@@ -1058,15 +1106,18 @@ be added indefinitely).''')
 PortAudio buffer size in units of frames. If zero or not specified
 (the recommended setting), backend will decide an optimal size. ''')
 
-    devopts.add_argument("-c", "--channels", type=int, nargs='+', help="Number of channels.")
+    devopts.add_argument("-c", "--channels", type=lambda x: nullortype(x, int),
+        nargs='+', help="Number of channels.")
 
-    devopts.add_argument("-d", "--device", type=dvctype, nargs='+',
-        help='''\
+    devopts.add_argument("-d", "--device", type=lambda x: nullortype(x, int),
+        nargs='+', help='''\
 Audio device name expression(s) or index number(s). Defaults to the
 PortAudio default device(s).''')
 
     devopts.add_argument("-f", "--format", metavar="format", dest='dtype',
-        nargs='+', choices=_sd._sampleformats.keys(), help='''\
+        type=nullortype, nargs='+',
+        choices=list(_sd._sampleformats.keys()) + [None],
+        help='''\
 Sample format(s) of audio device stream. Must be one of {%(choices)s}.''')
 
     devopts.add_argument("-r", "--rate", dest='samplerate', type=possizetype,
@@ -1076,21 +1127,27 @@ Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
     fileopts = parser.add_argument_group('''\
 audio file formatting options. (options accept single values or pairs)''')
 
-    fileopts.add_argument("-t", "--file_type", metavar="file_type",
-        type=str.upper, nargs='+', choices=_sf.available_formats().keys(), help='''\
+    fileopts.add_argument("-t", "--file_type", metavar="file_type", nargs='+',
+        type=lambda x: nullortype(x, str.upper),
+        choices=list(_sf.available_formats().keys()) + [None],
+        help='''\
 Audio file type(s). (Required for RAW files). Typically this is determined
 from the file header or extension, but it can be manually specified here. Must
 be one of {%(choices)s}.''')
 
-    fileopts.add_argument("-e", "--encoding", metavar="encoding",
-        type=str.upper, nargs='+', choices=_sf.available_subtypes(), help='''\
+    fileopts.add_argument("-e", "--encoding", metavar="encoding", nargs='+',
+        type=lambda x: nullortype(x, str.upper),
+        choices=list(_sf.available_subtypes().keys()) + [None],
+        help='''\
 Sample format encoding(s). Note for output file encodings: for file types that
 support PCM or FLOAT format, pastream will automatically choose the sample
 format that most closely matches the output device stream; for other file
 types, the subtype is required. Must be one of {%(choices)s}.''')
 
-    fileopts.add_argument("--endian", metavar="endian", type=str.lower, nargs='+',
-        choices=['file', 'big', 'little'], help='''\
+    fileopts.add_argument("--endian", metavar="endian", nargs='+',
+        type=lambda x: nullortype(x, str.lower),
+        choices=['file', 'big', 'little', None],
+        help='''\
 Sample endianness. Must be one of {%(choices)s}.''')
 
     return parser
@@ -1102,12 +1159,12 @@ def _main(argv=None):
     parser = _get_parser()
     args = parser.parse_args(argv)
 
-    # input/output multi-argument device options are reversed from what they
-    # are in the pastream library
+    # Note that input/output from the cli perspective is reversed wrt the
+    # pastream/portaudio library
     unpack = lambda x: x[0] if x and len(x) == 1 else x and x[::-1]
 
     try:
-        stream, kind = _SoundFileStreamFactory(args.input, args.output,
+        stream, kind = _SoundFileStreamFactory(args.output, args.input,
                             samplerate=args.samplerate, blocksize=args.blocksize,
                             buffersize=args.buffersize, frames=args.frames,
                             pad=args.pad, offset=args.offset,
@@ -1123,25 +1180,26 @@ def _main(argv=None):
         parser.exit(255)
 
     nullinp = nullout = None
-    if stream.inp_fh is None:
-        nullinp = 'n/a'
     if stream.out_fh is None:
+        nullinp = 'n/a'
+    if stream.inp_fh is None:
         nullout = 'n/a'
-    elif stream.out_fh.name == '-' or args.quiet:
+    elif stream.inp_fh.name == '-' or args.quiet:
         _sys.stdout = open(os.devnull, 'w')
 
-    statline = "\r{:8.3f}s {:10d} frames processed, {:>8s} frames free, " \
+
+    statline = "\r{:8.3f}s {:>8s} frames free, " \
                "{:>8s} frames queued ({:d} xruns, {:6.2f}% load)\r"
-    print("<--", stream.inp_fh if stream.inp_fh is not None else 'null')
-    print(["<->", "-->", "<--"][['duplex', 'input', 'output'].index(kind)], stream)
     print("-->", stream.out_fh if stream.out_fh is not None else 'null')
+    print("<--", stream.inp_fh if stream.inp_fh is not None else 'null')
+    print(["<->", "<--", "-->"][['duplex', 'output', 'input'].index(kind)], stream)
 
     with stream:
         try:
             stream.start()
             t1 = _time.time()
             while stream.active:
-                line = statline.format(_time.time() - t1, stream.frame_count,
+                line = statline.format(_time.time() - t1,
                                        nullinp
                                        or str(stream.txbuff.write_available),
                                        nullout
