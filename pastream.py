@@ -75,7 +75,7 @@ class _StreamBase(_sd._StreamBase):
     def __init__(self, kind, device=None, samplerate=None, channels=None,
                  dtype=None, frames=-1, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
-                 allow_drops=False, blocksize=None, **kwargs):
+                 blocksize=None, **kwargs):
         # unfortunately we need to figure out the framesize before allocating
         # the stream in order to be able to pass our user_data
         self.txbuff = self.rxbuff = None
@@ -110,8 +110,8 @@ class _StreamBase(_sd._StreamBase):
             self.__weakref[self._cstream] = lastTime
 
             # Init the C BufferedStream object
-            _lib.init_stream(self._cstream, int(allow_drops),
-                self.__frames, pad, offset, _ffi.NULL, _ffi.NULL)
+            _lib.init_stream(self._cstream, self.__frames, pad, offset,
+                _ffi.NULL, _ffi.NULL)
 
             # Cast our ring buffers for use in C
             if self.rxbuff is not None: self._cstream.rxbuff = \
@@ -645,9 +645,6 @@ class DuplexStream(InputStream, OutputStream):
         blocksizes.
     reader, writer : function, optional
         Buffer reader and writer functions to be run in a separate thread.
-    allow_drops : bool, optional
-        Allow dropping of input frames when the receive buffer (``rxbuff``) is
-        full.
     blocksize : int, optional
         Portaudio buffer size. If None or 0 (recommended), the Portaudio
         backend will automatically determine a size.
@@ -1059,11 +1056,13 @@ Cross platform audio playback and capture.''')
 
     parser.add_argument("input", type=nullortype,
         help='''\
-Playback audio file. Use dash '-' to read from STDIN. Use 'null' or an empty string ("") for record only.''')
+Playback audio file. Use dash (-) to read from STDIN. Use 'null' or an empty
+string ("") for record only.''')
 
     parser.add_argument("output", type=nullortype,
         help='''\
-Output file for recording. Use dash '-' to write to STDOUT. Use 'null' or an empty string ("") for playback only.''')
+Output file for recording. Use dash (-) to write to STDOUT. Use 'null' or an
+empty string ("") for playback only.''')
 
     genopts = parser.add_argument_group("general options")
 
@@ -1072,9 +1071,6 @@ Output file for recording. Use dash '-' to write to STDOUT. Use 'null' or an emp
 
     genopts.add_argument("-l", "--list", action=ListStreamsAction, nargs=0,
         help="List available audio device streams.")
-
-    genopts.add_argument("--loop", action='store_true', default=False,
-        help="Loop playback indefinitely.")
 
     genopts.add_argument("-q", "--quiet", action='store_true',
         help="Don't print any status information.")
@@ -1092,6 +1088,9 @@ maximum amount of buffering for the input/output file(s). Use higher values to
 increase robustness against irregular file i/o behavior. Add a 'K' or 'M'
 suffix to specify size in kibi or mebi units. (Default %(default)d)''')
 
+    propts.add_argument("--loop", action='store_true', default=False,
+        help="Loop playback indefinitely.")
+
     propts.add_argument("-n", "--frames", type=sizetype, default=-1, help='''\
 Limit playback/capture to this many frames. If FRAMES is negative (the
 default), then streaming will continue until there is no playback data
@@ -1105,17 +1104,17 @@ Drop a number of frames from the start of a recording.''')
         const=-1, help='''\
 Pad the input with frames of zeros. (Useful to avoid truncating full duplex
 recording). If PAD is negative then padding is chosen so that the total
-playback length matches --frames (or, if frames is also negative, zero padding
-will be added indefinitely).''')
+playback length matches --frames, or, if frames is also negative, zero padding
+will be added indefinitely.''')
 
     devopts = parser.add_argument_group("audio device options")
 
     devopts.add_argument("-b", "--blocksize", type=possizetype, help='''\
-PortAudio buffer size in units of frames. If zero or not specified
-(the recommended setting), backend will decide an optimal size. ''')
+PortAudio buffer size in units of frames. If zero or not specified, backend
+will decide an optimal size (recommended). ''')
 
     devopts.add_argument("-c", "--channels", type=lambda x: nullortype(x, int),
-        nargs='+', help="Number of channels for audio device(s).")
+        nargs='+', help="Number of input/output channels.")
 
     devopts.add_argument("-d", "--device", type=lambda x: nullortype(x, dvctype),
         nargs='+', help='''\

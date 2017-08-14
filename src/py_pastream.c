@@ -5,14 +5,12 @@
 
 void init_stream(
     Py_PaBufferedStream *stream, 
-    unsigned char allow_drops,
     long frames,
     long pad,
     unsigned long offset,
     PaUtilRingBuffer *rxbuff,
     PaUtilRingBuffer *txbuff) 
 {
-    stream->allow_drops = allow_drops;
     stream->frames = (frames >= 0 && pad >= 0) ? (frames + pad) : frames;
     // technically if frames < 0 padding has no meaning, but set it anyways to
     // give the user the least unexpected behavior
@@ -119,7 +117,7 @@ int callback(
         }
 
         iframes = PaUtil_WriteRingBuffer(stream->rxbuff, (const void *) in_data, frames_left);
-        if ( iframes < frames_left && !stream->allow_drops ) {
+        if ( iframes < frames_left ) {
             strcpy(stream->errorMsg, "BufferFull");
             stream->frame_count += iframes;
             return (stream->last_callback = paAbort);
