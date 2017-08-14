@@ -524,7 +524,8 @@ class _InputStreamMixin(object):
         try:
             sleeptime = (incframes - rxbuff.read_available) / self.samplerate
             if sleeptime > 0:
-                _time.sleep(sleeptime)
+                _time.sleep(max(self._cstream.offset / self.samplerate, sleeptime))
+
             while not (self.aborted or done):
                 # for thread safety, check the stream is active *before* reading
                 active = self.active
@@ -795,7 +796,7 @@ class _SoundFileStreamBase(_StreamBase):
         chunksize = min(8192, len(rxbuff))
         sleeptime = (chunksize - rxbuff.read_available) / stream.samplerate
         if sleeptime > 0:
-            _time.sleep(sleeptime)
+            _time.sleep(max(sleeptime, stream._cstream.offset / stream.samplerate))
         while not stream.aborted:
             # for thread safety, check the stream is active *before* reading
             active = stream.active
@@ -824,10 +825,16 @@ class _SoundFileStreamBase(_StreamBase):
     @staticmethod
     def _soundfileplayer(stream, txbuff):
         out_fh = stream.out_fh
+        readinto = out_fh.buffer_read_into
         if stream.rxbuff is not None:
             dtype = stream.dtype[1]
         else:
             dtype = stream.dtype
+
+        ptr1 = _ffi.new('void**')
+        ptr2 = _ffi.new('void**')
+        size1 = _ffi.new('ring_buffer_size_t*')
+        size2 = _ffi.new('ring_buffer_size_t*')
 
         chunksize = min(8192, len(txbuff))
         sleeptime = (chunksize - txbuff.write_available) / stream.samplerate
@@ -840,26 +847,30 @@ class _SoundFileStreamBase(_StreamBase):
                 stream.wait(0.0025)
                 continue
 
-            frames, buffregn1, buffregn2 = txbuff.get_write_buffers(frames)
-            readframes = out_fh.buffer_read_into(buffregn1, dtype=dtype)
-            if len(buffregn2):
-                readframes2 = out_fh.buffer_read_into(buffregn2, dtype=dtype)
-            else:
-                readframes2 = 0
-            readframes += readframes2
+            frames = _lib.PaUtil_GetRingBufferWriteRegions(
+                txbuff._ptr, frames, ptr1, size1, ptr2, size2)
+            buffregn1 = _ffi.buffer(ptr1[0], size1[0] * txbuff.elementsize)
+            buffregn2 = _ffi.buffer(ptr2[0], size2[0] * txbuff.elementsize)
 
-            # exit if we've reached end of file
-            if readframes < frames:
-                if LOOP:
+            readframes = readinto(buffregn1, dtype=dtype)
+            if len(buffregn2):
+                readframes += readinto(buffregn2, dtype=dtype)
+
+            if LOOP:
+                bytesz1 = size1[0] * txbuff.elementsize
+                bytesz2 = size2[0] * txbuff.elementsize
+                while readframes < frames:
                     out_fh.seek(0)
-                    if readframes < len(buffregn1) * txbuff.elementsize:
-                        readframes += out_fh.buffer_read_into(buffregn1 + readframes*txbuff.elementsize, dtype=dtype)
-                    if readframes2 < len(buffregn2) * txbuff.elementsize:
-                        readframes2 += out_fh.buffer_read_into(buffregn2 + readframes2*txbuff.elementsize, dtype=dtype)
-                    readframes += readframes2
-                txbuff.advance_write_index(readframes)
-                if not LOOP:
-                    break
+                    readbytes = readframes * txbuff.elementsize
+                    if readbytes < bytesz1:
+                        buffregn1 = _ffi.buffer(ptr1[0] + readbytes, bytesz1 - readbytes)
+                        readframes += readinto(buffregn1, dtype=dtype)
+                    else:
+                        buffregn2 = _ffi.buffer(ptr2[0] + readbytes - bytesz1, bytesz2 + bytesz1 - readbytes)
+                        readframes += readinto(buffregn2, dtype=dtype)
+            txbuff.advance_write_index(readframes)
+            if readframes < frames:
+                break
 
             sleeptime = (chunksize - txbuff.write_available) / stream.samplerate
             if sleeptime > 0:
@@ -1039,7 +1050,7 @@ Cross platform audio playback and capture.''')
         return x
 
     def nullortype(x, type=None):
-        return None if not x or x == 'null'[:max(3, len(x))] else (type(x) if type else x)
+        return None if not x or x == 'null'[:max(3, len(x))] else (type(x) if type is not None else x)
 
     def csvtype(arg, type=None):
         csvsplit = shlex.shlex(arg, posix=True)
@@ -1048,17 +1059,11 @@ Cross platform audio playback and capture.''')
 
     parser.add_argument("input", type=nullortype,
         help='''\
-Playback audio file. Use dash '-' to read from STDIN. Use 'null' or an empty string "" for record only.''')
+Playback audio file. Use dash '-' to read from STDIN. Use 'null' or an empty string ("") for record only.''')
 
     parser.add_argument("output", type=nullortype,
         help='''\
-Output file for recording. Use dash '-' to write to STDOUT. Use 'null' or an empty string "" for playback only.''')
-
-#     parser.add_argument("--loop", default=False, nargs='?', metavar='n',
-#                         const=True, type=int,
-#                         help='''\
-# Replay the playback file n times. If no argument is specified, playback will
-# loop infinitely. Does nothing if there is no playback.''')
+Output file for recording. Use dash '-' to write to STDOUT. Use 'null' or an empty string ("") for playback only.''')
 
     genopts = parser.add_argument_group("general options")
 
@@ -1068,7 +1073,10 @@ Output file for recording. Use dash '-' to write to STDOUT. Use 'null' or an emp
     genopts.add_argument("-l", "--list", action=ListStreamsAction, nargs=0,
         help="List available audio device streams.")
 
-    genopts.add_argument("-q", "--quiet", action='store_true', default=False,
+    genopts.add_argument("--loop", action='store_true', default=False,
+        help="Loop playback indefinitely.")
+
+    genopts.add_argument("-q", "--quiet", action='store_true',
         help="Don't print any status information.")
 
     genopts.add_argument("--version", action='version', version='%(prog)s ' + __version__,
@@ -1097,8 +1105,8 @@ Drop a number of frames from the start of a recording.''')
         const=-1, help='''\
 Pad the input with frames of zeros. (Useful to avoid truncating full duplex
 recording). If PAD is negative then padding is chosen so that the total
-playback length matches --frames, or, if frames is also negative, zero padding will
-be added indefinitely).''')
+playback length matches --frames (or, if frames is also negative, zero padding
+will be added indefinitely).''')
 
     devopts = parser.add_argument_group("audio device options")
 
@@ -1107,9 +1115,9 @@ PortAudio buffer size in units of frames. If zero or not specified
 (the recommended setting), backend will decide an optimal size. ''')
 
     devopts.add_argument("-c", "--channels", type=lambda x: nullortype(x, int),
-        nargs='+', help="Number of channels.")
+        nargs='+', help="Number of channels for audio device(s).")
 
-    devopts.add_argument("-d", "--device", type=lambda x: nullortype(x, int),
+    devopts.add_argument("-d", "--device", type=lambda x: nullortype(x, dvctype),
         nargs='+', help='''\
 Audio device name expression(s) or index number(s). Defaults to the
 PortAudio default device(s).''')
@@ -1159,6 +1167,9 @@ def _main(argv=None):
     parser = _get_parser()
     args = parser.parse_args(argv)
 
+    global LOOP
+    LOOP = args.loop
+
     # Note that input/output from the cli perspective is reversed wrt the
     # pastream/portaudio library
     unpack = lambda x: x[0] if x and len(x) == 1 else x and x[::-1]
@@ -1182,6 +1193,8 @@ def _main(argv=None):
     nullinp = nullout = None
     if stream.out_fh is None:
         nullinp = 'n/a'
+    elif args.loop and not stream.out_fh.seekable():
+        raise ValueError("Can't loop playback; input is not seekable")
     if stream.inp_fh is None:
         nullout = 'n/a'
     elif stream.inp_fh.name == '-' or args.quiet:
