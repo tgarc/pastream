@@ -1,6 +1,49 @@
 Changelog
 =========
 
+0.0.7
+-----
+- enhancements
+
+    + add *--loop* option to the CLI to allow looping playback. Implementing as
+      an option to the soundfilestream classes is a little more complicated so
+      I'm avoiding that route at the moment.
+
+    + allow empty string as an alternative to null
+
+    + Raise exception when attempting to open stream with RAW playback file if
+      any of samplerate/channels/subtype are not specified. This is IMO less
+      confusing than assuming the files conforms to the default device
+      parameters.
+    
+    + change prebuffering behavior slightly: only wait until the first write, not
+      until the buffer fills up. This should avoid potential long pre-buffer times
+
+    + minor formatting fix in __repr__ when using multiple dtypes and/or
+      devices
+
+    + no need to vendor pa_ringbuffer anymore, it's available on pip! (Thanks
+      @mgeier !)
+
+    + if a SoundFile *inpf* is passed to a SoundFileInputStream class, it will
+      be used to set the stream samplerate/channels.
+
+- bugfixes
+
+    + addresses a bug when BUFFERSIZE < 8192
+
+- API changes & backwards compatibility breaks:
+
+    + Stream and SoundFileStream classes renamed to *DuplexStream
+    
+    + Swapped assignments of input/output in SoundFileStreams to make it align
+      with the usage in the rest of the library. The order of input/output
+      arguments from the CLI still stays the same though.
+
+    + remove *allow_drops* parameters. It can be added back at a later point if
+      it proves to be a more useful feature
+    
+
 0.0.6
 -----
 - bugixes

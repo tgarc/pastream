@@ -37,8 +37,8 @@ from _py_pastream import ffi as _ffi, lib as _lib
 from pa_ringbuffer import init as _ringbuffer_init
 
 
-__version__ = '0.0.6.post0'
-__usage__ = "%(prog)s [options] [input] [output]"
+__version__ = '0.0.7'
+__usage__ = "%(prog)s [options] input output"
 
 
 LOOP = False
@@ -176,9 +176,11 @@ class _StreamBase(_sd._StreamBase):
             dtype=dtype, finished_callback=finished_callback, **kwargs)
 
         if kind == 'output' or kind == 'duplex':
-            assert len(self.txbuff) >= self.blocksize, "buffersize must be >= the audio device blocksize"
+            assert len(self.txbuff) >= self.blocksize, \
+                "buffersize must be >= the audio device blocksize"
         if kind == 'input' or kind == 'duplex':
-            assert len(self.rxbuff) >= self.blocksize, "buffersize must be >= the audio device blocksize"
+            assert len(self.rxbuff) >= self.blocksize, \
+                "buffersize must be >= the audio device blocksize"
 
         # DEBUG for measuring polling performance
         self._rmisses = self._wmisses = 0
@@ -188,11 +190,11 @@ class _StreamBase(_sd._StreamBase):
     def __stopiothreads(self):
         # !This function is *not* thread safe!
         currthread = _threading.current_thread()
-        if (self._rxthread is not None and self._rxthread.is_alive()
-            and self._rxthread != currthread):
+        if self._rxthread is not None and self._rxthread.is_alive() \
+           and self._rxthread != currthread:
             self._rxthread.join()
-        if (self._txthread is not None and self._txthread.is_alive()
-            and self._txthread != currthread):
+        if self._txthread is not None and self._txthread.is_alive() \
+           and self._txthread != currthread:
             self._txthread.join()
 
     def _readwritewrapper(self, buff, rwfunc):
@@ -517,7 +519,7 @@ class _InputStreamMixin(object):
         boverlap = overlap * rxbuff.elementsize
         minframes = 1 if varsize else incframes
 
-        #starttime = dt = rmisses = 0  # DEBUG
+        # starttime = dt = rmisses = 0  # DEBUG
         wait_time = leadtime = 0
         done = False
         self.start()
@@ -549,8 +551,8 @@ class _InputStreamMixin(object):
                 # print("{0:7.3f} {1:7.3f} {2:7.3f} {3:7.3f} {4} {5}".format(
                 #     1e3*(_time.time() - starttime), 1e3*sleeptime, 1e3*leadtime,
                 #     1e3*dt, self._rmisses - rmisses, frames - incframes))
-                rmisses = self._rmisses
-                starttime = _time.time()
+                # rmisses = self._rmisses
+                # starttime = _time.time()
 
                 frames, buffregn1, buffregn2 = rxbuff.get_read_buffers(
                     frames if varsize else incframes)
@@ -678,19 +680,20 @@ def _soundfile_from_stream(stream, kind, file, mode, **kwargs):
             fformat = None
 
     subtype = kwargs.pop('subtype', None)
+    endian = kwargs.get('endian', None)
     if not subtype:
         # For those file formats which support PCM or FLOAT, use the device
         # samplesize to make a guess at a default subtype
         dtype = stream.dtype; ssize = stream.samplesize; channels = stream.channels
         if kind == 'duplex':
             channels = channels[0]; dtype = dtype[0]; ssize = ssize[0]
-        if dtype == 'float32' and _sf.check_format(fformat, 'float', kwargs.get('endian', None)):
+        if dtype == 'float32' and _sf.check_format(fformat, 'float', endian):
             subtype = 'float'
         else:
             subtype = 'pcm_{0}'.format(8 * ssize)
-        if fformat and not _sf.check_format(fformat, subtype, kwargs.get('endian', None)):
+        if fformat and not _sf.check_format(fformat, subtype, endian):
             raise ValueError("Could not map stream datatype '{0}' to "
-                "an appropriate subtype for '{1}' format; please specify"\
+                "an appropriate subtype for '{1}' format; please specify"
                 .format(dtype, fformat))
 
     if 'channels' not in kwargs:
@@ -798,7 +801,6 @@ class _SoundFileStreamBase(_StreamBase):
             # for thread safety, check the stream is active *before* reading
             active = stream.active
             frames = rxbuff.read_available
-            lastTime = stream._cstream.lastTime.currentTime
             if frames == 0:
                 # we've read everything and the stream is done; seeya!
                 if not active: break
@@ -860,10 +862,12 @@ class _SoundFileStreamBase(_StreamBase):
                     out_fh.seek(0)
                     readbytes = readframes * txbuff.elementsize
                     if readbytes < bytesz1:
-                        buffregn1 = _ffi.buffer(ptr1[0] + readbytes, bytesz1 - readbytes)
+                        buffregn1 = _ffi.buffer(ptr1[0] + readbytes,
+                                        bytesz1 - readbytes)
                         readframes += readinto(buffregn1, dtype=dtype)
                     else:
-                        buffregn2 = _ffi.buffer(ptr2[0] + readbytes - bytesz1, bytesz2 + bytesz1 - readbytes)
+                        buffregn2 = _ffi.buffer(ptr2[0] + readbytes - bytesz1,
+                                        bytesz2 + bytesz1 - readbytes)
                         readframes += readinto(buffregn2, dtype=dtype)
             txbuff.advance_write_index(readframes)
             if readframes < frames:
@@ -948,8 +952,9 @@ class SoundFileDuplexStream(SoundFileInputStream, SoundFileOutputStream):
             buffersize=buffersize, **kwargs)
 
 
-# TODO: add support for generic 'input' which accepts file, buffer, or ndarray
-def chunks(chunksize=None, overlap=0, always_2d=False, out=None, outf=None,
+# TODO: add support for generic 'playback' which accepts soundfile, buffer, or
+# ndarray
+def chunks(chunksize=None, overlap=0, always_2d=False, out=None, playback=None,
            streamclass=None, **kwargs):
     """
     Read audio data in iterable chunks from a Portaudio stream.
@@ -958,7 +963,7 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, outf=None,
     ------------
     chunksize, overlap, always_2d, out
         See :meth:`DuplexStream.chunks` for description.
-    outf : SoundFile compatible input, optional
+    playback : SoundFile compatible object, optional
         Optional playback file.
 
     Other Parameters
@@ -980,16 +985,16 @@ def chunks(chunksize=None, overlap=0, always_2d=False, out=None, outf=None,
         ndarray or memoryview object with `chunksize` elements.
     """
     if streamclass is None:
-        if outf is not None:
-            stream = SoundFileDuplexStream(outf, **kwargs)
-        elif kwargs.get('writer', None) is not None:
+        if kwargs.get('writer', None) is not None:
             stream = DuplexStream(**kwargs)
+        elif playback is not None:
+            stream = SoundFileDuplexStream(playback, **kwargs)
         else:
             stream = InputStream(**kwargs)
-    elif outf is None:
+    elif playback is None:
         stream = streamclass(**kwargs)
     else:
-        stream = streamclass(outf, **kwargs)
+        stream = streamclass(playback, **kwargs)
     stream._autoclose = True
     return stream.chunks(chunksize, overlap, always_2d, out)
 
@@ -1028,13 +1033,12 @@ Cross platform audio playback and capture.''')
             print(_sd.query_devices())
             _sys.exit(0)
 
-
     def dvctype(dvc):
         try:               return int(dvc)
         except ValueError: return dvc
 
     def sizetype(x):
-        if x.endswith('k'):   x = int(float(x[:-1]) * 1e3)
+        if   x.endswith('k'): x = int(float(x[:-1]) * 1e3)
         elif x.endswith('K'): x = int(float(x[:-1]) * 1024)
         elif x.endswith('m'): x = int(float(x[:-1]) * 1e6)
         elif x.endswith('M'): x = int(float(x[:-1]) * 1024 * 1024)
@@ -1047,7 +1051,9 @@ Cross platform audio playback and capture.''')
         return x
 
     def nullortype(x, type=None):
-        return None if not x or x == 'null'[:max(3, len(x))] else (type(x) if type is not None else x)
+        if not x or x == 'null':
+            return None
+        return type(x) if type is not None else x
 
     def csvtype(arg, type=None):
         csvsplit = shlex.shlex(arg, posix=True)
@@ -1075,8 +1081,8 @@ empty string ("") for playback only.''')
     genopts.add_argument("-q", "--quiet", action='store_true',
         help="Don't print any status information.")
 
-    genopts.add_argument("--version", action='version', version='%(prog)s ' + __version__,
-        help="Print version and exit.")
+    genopts.add_argument("--version", action='version',
+        version='%(prog)s ' + __version__, help="Print version and exit.")
 
     propts = parser.add_argument_group('''\
 playback/record options. (size suffixes supported: k[ilo] K[ibi] m[ega] M[ebi])''')
@@ -1103,9 +1109,9 @@ Drop a number of frames from the start of a recording.''')
     propts.add_argument("-p", "--pad", type=sizetype, nargs='?', default=0,
         const=-1, help='''\
 Pad the input with frames of zeros. (Useful to avoid truncating full duplex
-recording). If PAD is negative then padding is chosen so that the total
-playback length matches --frames, or, if frames is also negative, zero padding
-will be added indefinitely.''')
+recording). If PAD is negative (the default if no argument is given) then
+padding is chosen so that the total playback length matches --frames. If frames
+is also negative, zero padding will be added indefinitely.''')
 
     devopts = parser.add_argument_group("audio device options")
 
@@ -1121,11 +1127,11 @@ will decide an optimal size (recommended). ''')
 Audio device name expression(s) or index number(s). Defaults to the
 PortAudio default device(s).''')
 
+    choices = list(_sd._sampleformats.keys())
     devopts.add_argument("-f", "--format", metavar="format", dest='dtype',
-        type=nullortype, nargs='+',
-        choices=list(_sd._sampleformats.keys()) + [None],
-        help='''\
-Sample format(s) of audio device stream. Must be one of {%(choices)s}.''')
+        type=nullortype, nargs='+', choices=choices + [None], help='''\
+Sample format(s) of audio device stream. Must be one of {%s}.'''
+% ', '.join(['null'] + choices))
 
     devopts.add_argument("-r", "--rate", dest='samplerate', type=possizetype,
         help='''\
@@ -1134,35 +1140,38 @@ Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
     fileopts = parser.add_argument_group('''\
 audio file formatting options. (options accept single values or pairs)''')
 
+    choices = list(_sf.available_formats().keys())
     fileopts.add_argument("-t", "--file_type", metavar="file_type", nargs='+',
-        type=lambda x: nullortype(x, str.upper),
-        choices=list(_sf.available_formats().keys()) + [None],
+        type=lambda x: nullortype(x, str.upper), choices=choices + [None],
         help='''\
 Audio file type(s). (Required for RAW files). Typically this is determined
 from the file header or extension, but it can be manually specified here. Must
-be one of {%(choices)s}.''')
+be one of {%s}.''' % ', '.join(['null'] + choices))
 
+    choices = list(_sf.available_subtypes().keys())
     fileopts.add_argument("-e", "--encoding", metavar="encoding", nargs='+',
-        type=lambda x: nullortype(x, str.upper),
-        choices=list(_sf.available_subtypes().keys()) + [None],
+        type=lambda x: nullortype(x, str.upper), choices=choices + [None],
         help='''\
 Sample format encoding(s). Note for output file encodings: for file types that
 support PCM or FLOAT format, pastream will automatically choose the sample
 format that most closely matches the output device stream; for other file
-types, the subtype is required. Must be one of {%(choices)s}.''')
+types, the subtype is required. Must be one of {%s}.'''
+% ', '.join(['null'] + choices))
 
+    choices = ['file', 'big', 'little']
     fileopts.add_argument("--endian", metavar="endian", nargs='+',
-        type=lambda x: nullortype(x, str.lower),
-        choices=['file', 'big', 'little', None],
+        type=lambda x: nullortype(x, str.lower), choices=choices + [None],
         help='''\
-Sample endianness. Must be one of {%(choices)s}.''')
+Sample endianness. Must be one of {%s}.''' % ', '.join(['null'] + choices))
 
     return parser
 
 
 def _main(argv=None):
     import os, traceback
-    if argv is None: argv = _sys.argv[1:]
+
+    if argv is None:
+        argv = _sys.argv[1:]
     parser = _get_parser()
     args = parser.parse_args(argv)
 
@@ -1170,21 +1179,23 @@ def _main(argv=None):
     LOOP = args.loop
 
     # Note that input/output from the cli perspective is reversed wrt the
-    # pastream/portaudio library
-    unpack = lambda x: x[0] if x and len(x) == 1 else x and x[::-1]
+    # pastream/portaudio library so we swap arguments here
+    def unpack(x):
+        return x[0] if x and len(x) == 1 else x and x[::-1]
 
     try:
         stream, kind = _SoundFileStreamFactory(args.output, args.input,
-                            samplerate=args.samplerate, blocksize=args.blocksize,
-                            buffersize=args.buffersize, frames=args.frames,
-                            pad=args.pad, offset=args.offset,
-                            endian=unpack(args.endian),
-                            subtype=unpack(args.encoding),
-                            format=unpack(args.file_type),
-                            device=unpack(args.device),
-                            channels=unpack(args.channels),
-                            dtype=unpack(args.dtype))
-    except ValueError as exc:
+                           samplerate=args.samplerate,
+                           blocksize=args.blocksize,
+                           buffersize=args.buffersize, frames=args.frames,
+                           pad=args.pad, offset=args.offset,
+                           endian=unpack(args.endian),
+                           subtype=unpack(args.encoding),
+                           format=unpack(args.file_type),
+                           device=unpack(args.device),
+                           channels=unpack(args.channels),
+                           dtype=unpack(args.dtype))
+    except ValueError:
         traceback.print_exc()
         parser.print_usage()
         parser.exit(255)
@@ -1198,7 +1209,6 @@ def _main(argv=None):
         nullout = 'n/a'
     elif stream.inp_fh.name == '-' or args.quiet:
         _sys.stdout = open(os.devnull, 'w')
-
 
     statline = "\r{:8.3f}s {:>8s} frames free, " \
                "{:>8s} frames queued ({:d} xruns, {:6.2f}% load)\r"
@@ -1223,6 +1233,7 @@ def _main(argv=None):
             stream.stop()
         finally:
             print()
+
     print("Callback info:")
     print("\tFrames processed: %d ( %7.3fs )"
           % (stream.frame_count, stream.frame_count / float(stream.samplerate)))
