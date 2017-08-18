@@ -441,9 +441,7 @@ class _InputStreamMixin(object):
             be used. Note that if the blocksize is zero the yielded audio
             chunks may be of variable length depending on the audio backend.
         overlap : int, optional
-            Number of frames to overlap across blocks. Note that enabling this
-            option requires that data be copied out from the stream's
-            ringbuffer either into ``out`` or a temporary buffer.
+            Number of frames to overlap across blocks.
         always_2d : bool, optional
             Always returns blocks 2 dimensional arrays. Only valid if you have
             numpy installed.
@@ -474,19 +472,22 @@ class _InputStreamMixin(object):
             dtype = self.dtype
             channels = self.channels
 
+        rxbuff = self.rxbuff
         varsize = False
         if not chunksize:
             if self.blocksize:
-                chunksize = self.blocksize
+                chunksize = self.blocksize + overlap
+            elif overlap:
+                raise ValueError(
+                    "Using overlap requires a non-zero chunksize or stream blocksize")
             else:
                 varsize = True
                 chunksize = int(round(latency * self.samplerate))
-            if overlap and varsize:
-                raise ValueError(
-                    "Using overlap requires a non-zero chunksize or stream blocksize")
-        if overlap >= chunksize:
+
+        if overlap > chunksize:
             raise ValueError(
                 "Overlap must be less than chunksize or stream blocksize")
+
         if always_2d and (_np is None or not isinstance(out, _np.ndarray)):
             raise ValueError("always_2d is only supported with numpy arrays")
 
@@ -500,34 +501,39 @@ class _InputStreamMixin(object):
             else:
                 bytebuff = tempbuff
         elif _np is None:
-            if varsize: nbytes = len(self.rxbuff) * self.rxbuff.elementsize
-            else:       nbytes = chunksize * self.rxbuff.elementsize
+            if varsize: nbytes = len(rxbuff) * rxbuff.elementsize
+            else:       nbytes = chunksize * rxbuff.elementsize
             bytebuff = tempbuff = memoryview(bytearray(nbytes))
         else:
             numpy = True
             if channels > 1: always_2d = True
-            if varsize: frames = len(self.rxbuff)
+            if varsize: frames = len(rxbuff)
             else:       frames = chunksize
             tempbuff = _np.zeros((frames, channels) if always_2d
                                  else frames * channels, dtype=dtype)
             try:                   bytebuff = tempbuff.data.cast('B')
             except AttributeError: bytebuff = tempbuff.data
 
-        copy = bool(overlap) or out is not None
-        incframes = chunksize - overlap
-        rxbuff = self.rxbuff
         boverlap = overlap * rxbuff.elementsize
-        minframes = 1 if varsize else incframes
+        minframes = 1 if varsize else chunksize
 
-        # starttime = dt = rmisses = 0  # DEBUG
+        # fill the first overlap block with zeros
+        if overlap:
+            rxbuff.write(bytearray(boverlap))
+
+        # DEBUG
+        # logf = open('chunks2.log', 'wt')
+        # print("delta sleep lag yield misses frames", file=logf)
+        # starttime = dt = rmisses = 0
+
         wait_time = leadtime = 0
         done = False
+        starttime = _time.time()
         self.start()
         try:
-            sleeptime = (incframes - rxbuff.read_available) / self.samplerate
+            sleeptime = self.latency - _time.time() + starttime - rxbuff.read_available / self.samplerate
             if sleeptime > 0:
                 _time.sleep(max(self._cstream.offset / self.samplerate, sleeptime))
-
             while not (self.aborted or done):
                 # for thread safety, check the stream is active *before* reading
                 active = self.active
@@ -548,46 +554,43 @@ class _InputStreamMixin(object):
                     wait_time = 0
 
                 # Debugging only
-                # print("{0:7.3f} {1:7.3f} {2:7.3f} {3:7.3f} {4} {5}".format(
-                #     1e3*(_time.time() - starttime), 1e3*sleeptime, 1e3*leadtime,
-                #     1e3*dt, self._rmisses - rmisses, frames - incframes))
+                # print("{0:f} {1:f} {2:f} {3:f} {4} {5}".format(
+                #     1e3*(_time.time() - starttime), 1e3*sleeptime, 1e3*(self.time - lastTime),
+                #     1e3*dt, self._rmisses - rmisses, frames - chunksize), file=logf)
                 # rmisses = self._rmisses
                 # starttime = _time.time()
 
                 frames, buffregn1, buffregn2 = rxbuff.get_read_buffers(
-                    frames if varsize else incframes)
+                    frames if varsize else chunksize)
 
-                if copy or len(buffregn2):
-                    n2offset = boverlap + len(buffregn1)
-                    bytebuff[boverlap:n2offset] = buffregn1
-                    if len(buffregn2):
-                        bytebuff[n2offset:n2offset + len(buffregn2)] = buffregn2
-                    rxbuff.advance_read_index(frames)
+                if out is not None or len(buffregn2):
+                    buffsz1 = len(buffregn1)
+                    bytebuff[:buffsz1] = buffregn1
+                    bytebuff[buffsz1:buffsz1 + len(buffregn2)] = buffregn2
+                    rxbuff.advance_read_index(frames - overlap)
                     if numpy:
-                        yield tempbuff[:overlap + frames]
+                        yield tempbuff[:frames]
                     else:
-                        yield bytebuff[:boverlap + frames * rxbuff.elementsize]
-                    if overlap:
-                        bytebuff[:boverlap] = bytebuff[-boverlap:]
+                        yield bytebuff[:frames * rxbuff.elementsize]
                 else:
                     if always_2d:
                         yield _np.frombuffer(buffregn1, dtype=dtype)\
                                  .reshape(frames, channels)
-                    elif _np:
+                    elif numpy:
                         yield _np.frombuffer(buffregn1, dtype=dtype)
                     else:
                         yield buffregn1
-                    rxbuff.advance_read_index(frames)
+                    rxbuff.advance_read_index(frames - overlap)
 
-                # dt = _time.time() - starttime  # DEBUG
+                # # DEBUG
+                # dt = _time.time() - starttime
 
-                # lagtime = self.time - self._cstream.lastTime.currentTime
-                sleeptime = (incframes - rxbuff.read_available) / self.samplerate \
+                sleeptime = (chunksize - rxbuff.read_available) / self.samplerate \
                     + self._cstream.lastTime.currentTime - self.time              \
                     + leadtime
                 if sleeptime > 0:
                     _time.sleep(sleeptime)
-        except:
+        except Exception:
             if _sd._initialized:
                 self.stop()
                 if self._autoclose: self.close()

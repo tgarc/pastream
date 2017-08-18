@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
@@ -54,11 +55,10 @@ except:
     sys.exit(255)
 
 fig, ax = plt.subplots()
-line, = ax.plot([], [], 'b-')
+line, = ax.plot([], [], 'b-', drawstyle='steps-mid')
 ax.grid()
 
 with stream:
-    plotdata = np.zeros(update//2 + 1, dtype=float)
-    ani = animation.FuncAnimation(fig, draw, stream.chunks(update, update//2),
+    ani = animation.FuncAnimation(fig, draw, stream.chunks(update, overlap=update//2),
                                   blit=True, interval=0, repeat=False, init_func=init)
     plt.show(block=True)
