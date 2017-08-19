@@ -5,7 +5,7 @@
 
 void init_stream(
     Py_PaBufferedStream *stream, 
-    long frames,
+    long long frames,
     long pad,
     unsigned long offset,
     PaUtilRingBuffer *rxbuff,
@@ -48,7 +48,7 @@ int callback(
     unsigned long frames_left = frame_count, offset = 0;
     ring_buffer_size_t oframes, iframes;
     Py_PaBufferedStream *stream = (Py_PaBufferedStream *) user_data;
-    long frames = stream->frames;
+    long long frames = stream->frames;
     long pad = stream->pad;
 
     if ( status & 0xF ) {
