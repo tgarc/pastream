@@ -31,7 +31,10 @@ setup(name='pastream',
           'sounddevice>=0.3.7',
       ],
       tests_require=['pytest>=3.0', 'numpy'],
-      extras_require={'examples': ['numpy', 'matplotlib']},
+      extras_require={
+          'examples': ['numpy', 'matplotlib'],
+          'docs': ['sphinx_rtd_theme']
+      },
       classifiers=[
           'License :: OSI Approved :: MIT License',
           'Operating System :: OS Independent',

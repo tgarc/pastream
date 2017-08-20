@@ -8,13 +8,14 @@
     :target: https://ci.appveyor.com/project/tgarc/pastream/branch/master
 
 
-pastream - GIL-less Portaudio Streams for Python
+GIL-less Portaudio Streams for Python
 =================================================
 `pastream` builds on top of `portaudio <http://www.portaudio.com/>`__ and the
 excellent `sounddevice <http://github.com/spatialaudio/python-sounddevice>`__
 python bindings to provide some more advanced functionality right out of the
 box. Note that in addition to the pastream *library*, pastream includes a
-`command line application`_ for playing and recording audio files.
+`command line application`_ for playing
+and recording audio files.
 
 
 Features
@@ -33,9 +34,9 @@ Input Stream iterators
 
        import pastream as ps
        for chunk in ps.chunks():
-           # do stuff with chunked audio
+           process(chunk)
     
-    See `pastream.chunks` and `pastream.*Stream.chunks` method.
+    See :meth:`pastream.chunks` and :meth:`pastream.InputStream.chunks` method.
             
 Reader/Writer Threads
     pastream simplifies the process of implementing stream reader and writer
@@ -90,6 +91,22 @@ Then do a pip install from your working copy::
     $ pip install <path/to/checkout>
 
 
+Building Documentation
+----------------------
+Documentation for pastream can be easily generated in a wide variety of formats
+using Sphinx. Just follow the steps below.
+
+Checkout the repository::
+
+    $ git clone --recursive http://github.com/tgarc/pastream
+
+Then use the included makefile/make.bat to generate documentation. (Here we
+output to the html format)::
+
+    $ cd pastream/docs
+    $ make html
+
+
 Examples
 ----------------
 Record to file:
@@ -110,14 +127,14 @@ Grab (real) frequency transformed live audio stream with 50% overlap:
 
    chunksize = 1024
    window = np.hanning(chunksize)
-   for l, x_l in enumerate(ps.chunks(chunksize, overlap=chunksize//2, channels=1)):
+   for x_l in ps.chunks(chunksize, overlap=chunksize//2, channels=1):
        X_l = np.fft.rfft(x_l * window)
 
-See also the included examples under `pastream/examples`.
+See also the included examples under `/examples`.
 
 
 Command Line Application
---------------------------------
+-----------------------------------
 Once installed, the pastream application should be callable from your command
 line. If you're familiar with `sox <http://sox.sourceforge.net/>`__ you'll
 notice that some of the command line syntax is quite similar. Here are a few

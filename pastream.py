@@ -19,8 +19,7 @@
 # LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-"""
-pastream: Portaudio Streams for Python
+"""pastream: GIL-less Portaudio Streams for Python
 """
 from __future__ import print_function as _print_function
 try:                import Queue as _queue
@@ -71,6 +70,11 @@ RingBuffer = _ringbuffer_init(_ffi, _lib)
 
 # TODO?: add option to do asynchronous exception raising
 class _StreamBase(_sd._StreamBase):
+    """Abstract base stream class from which all other stream classes derive.
+
+    Note that this class inherits from :mod:`sounddevice`'s ``_StreamBase``
+    class.
+    """
     def __init__(self, kind, device=None, samplerate=None, channels=None,
                  dtype=None, frames=-1, pad=0, offset=0,
                  buffersize=_PA_BUFFERSIZE, reader=None, writer=None,
@@ -200,6 +204,7 @@ class _StreamBase(_sd._StreamBase):
         """\
         Wrapper for the reader and writer functions which acts as a kind
         of context manager.
+
         """
         try:
             rwfunc(self, buff)
@@ -213,6 +218,7 @@ class _StreamBase(_sd._StreamBase):
         """\
         Raise the last deferred exception if one exists. If the caller's
         thread is not the stream owner this function does nothing.
+
         """
         currthread = _threading.current_thread()
         if currthread is self._rxthread or currthread is self._txthread:
@@ -240,6 +246,7 @@ class _StreamBase(_sd._StreamBase):
     def _set_exception(self, exc=None):
         """\
         Queue an exception to be re-raised later using `_reraise_exceptions`.
+
         """
         try:
             self.__exceptions.put(exc or _sys.exc_info(), block=False)
@@ -254,9 +261,8 @@ class _StreamBase(_sd._StreamBase):
         Returns
         -------
         bool
-        True unless the timeout occurs.
+            True unless the timeout occurs.
 
-        NB: This function does not wait for receive buffer to empty.
         """
         with self.__statecond:
             if self.__state == 0:
@@ -266,18 +272,20 @@ class _StreamBase(_sd._StreamBase):
 
     @property
     def aborted(self):
-        """\
-        Whether stream has been aborted. If True, it is
-        guaranteed that the stream is in a finished state.
+        """Check whether stream has been aborted.
+
+        If True, it is guaranteed that the stream is in a finished state.
+
         """
         return self.__state & _ABORTED > 0
 
     @property
     def finished(self):
-        """\
-        Whether the portaudio stream is in a finished state. Will only
-        be True if `start()` has been called and the stream either
-        completed sucessfully or was stopped/aborted.
+        """Check whether the stream is in a finished state. 
+
+        Will only be True if :meth:`start` has been called and the stream
+        either completed sucessfully or was stopped/aborted.
+
         """
         return self.__state & _FINISHED > 0
 
@@ -286,6 +294,7 @@ class _StreamBase(_sd._StreamBase):
         """\
         The current PaStreamCallbackFlags status of the portaudio
         stream.
+
         """
         return self._cstream.status
 
@@ -295,9 +304,10 @@ class _StreamBase(_sd._StreamBase):
 
     @property
     def frame_count(self):
-        """\
-        Running total of frames that have been processed. Each new
-        starting of the stream resets this number to zero.
+        """Running total of frames that have been processed. 
+
+        Each new starting of the stream resets this number to zero.
+
         """
         return self._cstream.frame_count
 
@@ -363,14 +373,13 @@ class _StreamBase(_sd._StreamBase):
             self._txthread = _threading.Thread(**self._txthread_args)
             self._txthread.daemon = True
 
-    def start(self, prebuffer=True):
+    def start(self):
         self._prepare()
         if self._txthread is not None:
             self._txthread.start()
-            if prebuffer:
-                while not self.txbuff.read_available and self._txthread.is_alive():
-                    _time.sleep(0.005)
-                self._reraise_exceptions()
+            while not self.txbuff.read_available and self._txthread.is_alive():
+                _time.sleep(0.005)
+            self._reraise_exceptions()
         super(_StreamBase, self).start()
         if self._rxthread is not None:
             self._rxthread.start()
@@ -426,12 +435,13 @@ class _StreamBase(_sd._StreamBase):
 class _InputStreamMixin(object):
 
     def chunks(self, chunksize=None, overlap=0, frames=-1, always_2d=False, out=None):
-        """
-        Similar in concept to PySoundFile library's `blocks` method. Returns
-        an iterator over buffered audio chunks read from a Portaudio stream.
-        By default a direct view into the stream's ringbuffer is returned
-        whenever possible. Setting an ``out`` buffer or a non-zero ``overlap``
-        will incur an extra copy.
+        """Read audio data in iterable chunks from a Portaudio stream.
+
+        Similar in concept to PySoundFile library's
+        :meth:`~soundfile.SoundFile.blocks` method. Returns an iterator over
+        buffered audio chunks read from a Portaudio stream.  By default a
+        direct view into the stream's ringbuffer is returned whenever
+        possible. Setting an `out` buffer will of course incur an extra copy.
 
         Parameters
         ----------
@@ -444,25 +454,23 @@ class _InputStreamMixin(object):
         frames : int, optional
             Number of frames to play/record.
         always_2d : bool, optional
-            Always returns blocks 2 dimensional arrays. Only valid if you have
-            numpy installed.
-        out : numpy.ndarray or buffer object, optional
+            Always return chunks as 2 dimensional arrays. Only valid if you
+            have numpy installed.
+        out : :class:`~numpy.ndarray` or buffer object, optional
             Alternative output buffer in which to store the result. Note that
-            any buffer object - with the exception of ``numpy.ndarray`` - is
+            any buffer object - with the exception of :class:`~numpy.ndarray` - is
             expected to have single-byte elements as would be provided by e.g.,
             ``bytearray``. ``bytes`` objects are not recommended as they will
             incur extra copies (use ``bytearray`` instead).
 
-        See Also
-        --------
-        :func:`chunks`
-
         Yields
         ------
-        numpy.ndarray, buffer
-            Buffer object with ``chunksize`` frames. If numpy is available
-            defaults to numpy.ndarray otherwise a buffer of bytes is yielded
-            (which is either a cffi.buffer object or a memoryview).
+        :class:`~numpy.ndarray`, buffer
+            Buffer object with `chunksize` frames. If numpy is available
+            defaults to :class:`~numpy.ndarray` otherwise a buffer of bytes is
+            yielded (which is either a :class:`cffi.buffer` object or a
+            ``memoryview``).
+
         """
         try:
             channels = self.channels[0]
@@ -600,8 +608,7 @@ class _InputStreamMixin(object):
 
 
 class InputStream(_InputStreamMixin, _StreamBase):
-    """
-    Record only stream.
+    """Record only stream.
 
     Parameters
     -----------
@@ -620,7 +627,7 @@ class InputStream(_InputStreamMixin, _StreamBase):
 
     Attributes
     ----------
-    rxbuff : Ringbuffer
+    rxbuff : :class:`Ringbuffer`
         RingBuffer used for storing data read from the audio device.
 
     """
@@ -630,8 +637,7 @@ class InputStream(_InputStreamMixin, _StreamBase):
 
 
 class OutputStream(_StreamBase):
-    """
-    Playback only stream.
+    """Playback only stream.
 
     Parameters
     -----------
@@ -642,8 +648,8 @@ class OutputStream(_StreamBase):
     pad : int, optional
         Number of zero frames to pad the playback with. A negative value causes
         padding to be automatically chosen so that the total playback length
-        matches ``frames`` (or, if frames is negative, zero padding will be
-        added indefinitely).
+        matches `frames` (or, if frames is negative, zero padding will be added
+        indefinitely).
     writer : function, optional
         Dedicated function for feeding the output ring buffer.
 
@@ -654,7 +660,7 @@ class OutputStream(_StreamBase):
 
     Attributes
     ----------
-    txbuff : Ringbuffer
+    txbuff : :class:`Ringbuffer`
         RingBuffer used for storing data to output to the audio device.
 
     """
@@ -664,18 +670,13 @@ class OutputStream(_StreamBase):
 
 
 class DuplexStream(InputStream, OutputStream):
-    """
-    Full duplex audio streamer.
+    """Full duplex audio streamer.
 
     Parameters
     -----------
     frames : int, optional
         Number of frames to play/record. (Note: This does *not* include the
         length of any additional padding).
-    pad, writer
-        See :class:`OutputStream`.
-    offset, reader
-        See :class:`InputStream`.
     buffersize : int, optional
         Transmit/receive buffer size in units of frames.
     blocksize : int, optional
@@ -684,13 +685,17 @@ class DuplexStream(InputStream, OutputStream):
 
     Other Parameters
     ----------------
+    pad, writer
+        See :class:`OutputStream`.
+    offset, reader
+        See :class:`InputStream`.
     device, channels, dtype, **kwargs
-        Additional parameters to pass to ``sounddevice._StreamBase``.
+        Additional parameters to pass to :class:`_StreamBase`.
 
     Attributes
     ----------
-    txbuff, rxbuff
-        See :class:`OutputStream`, :class:`InputStream`.
+    txbuff, rxbuff : :class:`RingBuffer`
+        See :class:`OutputStream`, :class:`InputStream` for explanation.
 
     See Also
     --------
@@ -921,20 +926,20 @@ class _SoundFileStreamBase(_StreamBase):
 
 
 class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
-    """
-    Audio file recorder. See :class:`SoundFileStream` for explanation of
-    parameters.
+    """Audio file recorder. 
+
+    See :class:`SoundFileStream` for explanation of parameters.
 
     Parameters
     ----------
-    inpf : SoundFile, str, or file-like
+    inpf : :class:`~soundfile.SoundFile`, str, or file-like
         Input file to capture data from audio device. If a SoundFile is not
         passed, the input file parameters will be determined from the input
         audio stream.
 
     Attributes
     ------------
-    inp_fh : SoundFile
+    inp_fh : :class:`~soundfile.SoundFile`
         The file object to capture data from the input ring buffer.
 
     """
@@ -944,13 +949,13 @@ class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
 
 
 class SoundFileOutputStream(_SoundFileStreamBase):
-    """
-    Audio file player. See :class:`SoundFileStream` for explanation of
-    parameters.
+    """Audio file player. 
+
+    See :class:`SoundFileStream` for explanation of parameters.
 
     Parameters
     ----------
-    outf : SoundFile, str, or file-like
+    outf : :class:`~soundfile.SoundFile`, str, or file-like
         Output file to stream to audio device. The output file will determine
         the samplerate and number of channels for the audio stream.
 
@@ -961,7 +966,7 @@ class SoundFileOutputStream(_SoundFileStreamBase):
 
     Attributes
     ------------
-    out_fh : SoundFile
+    out_fh : :class:`~soundfile.SoundFile`
         The file object to write to the output ring buffer.
 
     """
@@ -972,22 +977,19 @@ class SoundFileOutputStream(_SoundFileStreamBase):
 
 
 class SoundFileDuplexStream(SoundFileInputStream, SoundFileOutputStream):
-    """
-    Full duplex audio file streamer. Note that only one of inpf and outf
-    is required. This allows you to e.g. use a SoundFile as input but
-    implement your own reader and/or read from the buffer in the
-    stream's owner thread.
-
-    Parameters
-    ----------
-    inpf, outf
-        See :class:`SoundFileInputStream`, :class:`SoundFileOutputStream`
+    """Full duplex audio file streamer.
+    Note that only one of inpf and outf is required. This allows you to
+    e.g. use a SoundFile as input but implement your own reader and/or read
+    from the buffer in the stream's owner thread.
 
     Other Parameters
     ----------------------
+    inpf, outf
+        See :class:`SoundFileInputStream`, :class:`SoundFileOutputStream`
     format, subtype, endian
-        Parameters to pass to SoundFile constructor(s). Accepts pairs to allow
-        different parameters for input and output files.
+        Parameters to pass to :class:`~soundfile.SoundFile`
+        constructor(s). Accepts single values or pairs to allow different
+        parameters for input and output files.
     **kwargs
         Additional parameters to pass to _StreamBase.
     """
@@ -1004,35 +1006,31 @@ class SoundFileDuplexStream(SoundFileInputStream, SoundFileOutputStream):
 
 # TODO: add support for generic 'playback' which accepts soundfile, buffer, or
 # ndarray
-def chunks(chunksize=None, overlap=0, frames=-1, always_2d=False, out=None, playback=None,
-           streamclass=None, **kwargs):
-    """
-    Read audio data in iterable chunks from a Portaudio stream.
+def chunks(chunksize=None, overlap=0, frames=-1, always_2d=False, out=None,
+           playback=None, **kwargs):
+    """Read audio data in iterable chunks from a Portaudio stream.
 
     Parameters
     ------------
     chunksize, overlap, frames, always_2d, out
         See :meth:`InputStream.chunks` for description.
-    playback : SoundFile compatible object, optional
+    playback : :class:`~soundfile.SoundFile` compatible object, optional
         Optional playback file.
 
     Other Parameters
     -----------------
-    streamclass : object
-        Base class to use. By default the streamclass will be one of
-        InputStream, DuplexStream or SoundFileDuplexStream depending
-        on whether an input file and/or `writer` argument was supplied.
     **kwargs
         Additional arguments to pass to :class:`_StreamBase`.
 
-    See Also
-    --------
-    :meth:`InputStream.chunks`, :meth:`DuplexStream.chunks`
-
     Yields
     -------
-    array
-        ndarray or memoryview object with `chunksize` elements.
+    buffer
+        :class:`~numpy.ndarray` or memoryview object with `chunksize` elements.
+
+    See Also
+    --------
+    :meth:`InputStream.chunks`
+
     """
     if streamclass is None:
         if kwargs.get('writer', None) is not None:
