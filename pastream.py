@@ -236,9 +236,9 @@ class _StreamBase(_sd._StreamBase):
             exctype, excval, exctb = exc
             if exctype is not None:
                 excval = exctype(excval)
-            try:
+            if hasattr(excval, 'with_traceback'):
                 raise excval.with_traceback(exctb)
-            except AttributeError:
+            else:
                 exec("raise excval, None, exctb")
         else:
             raise exc
