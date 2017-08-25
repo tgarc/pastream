@@ -361,10 +361,6 @@ class _StreamBase(_sd._StreamBase):
         # Reset cstream info
         _lib.reset_stream(self._cstream)
 
-        # Clear any rx buffer data still leftover
-        if self.rxbuff is not None:
-            self.rxbuff.flush()
-
         # Recreate the necessary threads
         if self._rxthread_args is not None:
             self._rxthread = _threading.Thread(**self._rxthread_args)
