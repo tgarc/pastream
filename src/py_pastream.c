@@ -1,6 +1,7 @@
 #include <portaudio.h>
 #include <pa_ringbuffer.h>
 #include "py_pastream.h"
+#include <math.h>
 
 
 void init_stream(
@@ -46,7 +47,7 @@ int callback(
     void *user_data) 
 {
     unsigned long frames_left = frame_count, offset = 0;
-    ring_buffer_size_t oframes, iframes;
+    ring_buffer_size_t oframes_left = frame_count, oframes, iframes;
     Py_PaBufferedStream *stream = (Py_PaBufferedStream *) user_data;
     long long frames = stream->frames;
     long pad = stream->pad;
@@ -66,13 +67,21 @@ int callback(
 
     // exit point (1 of 2)
     // We've surpassed frames: this is our last callback
-    if ( frames >= 0 && stream->frame_count + frames_left >= frames ) {
-        frames_left = frames - stream->frame_count;
-        stream->last_callback = paComplete;
+    if ( frames >= 0 ) {
+        if ( stream->frame_count + frames_left >= frames ) {
+            frames_left = frames - stream->frame_count;
+            stream->last_callback = paComplete;
+        }
+        if ( pad >= 0 && stream->frame_count + frames_left + pad >= frames ) {
+            if ( abs(frames - pad) > stream->frame_count )
+                oframes_left = abs(frames - pad) - stream->frame_count;
+            else
+                oframes_left = 0;
+        }
     }
 
     if ( stream->txbuff != NULL ) {
-        oframes = PaUtil_ReadRingBuffer(stream->txbuff, out_data, frames_left);
+        oframes = PaUtil_ReadRingBuffer(stream->txbuff, out_data, oframes_left);
 
         // We're done reading frames! Or the writer was too slow; either way,
         // finish up by adding some zero padding.
@@ -101,7 +110,7 @@ int callback(
                 }
                 // else { pad indefinitely; }
             }
-            else if ( !stream->__autoframes && pad >= 0 ) {
+            else if ( !stream->__autoframes && pad >= 0 && oframes < oframes_left) {
                 strcpy(stream->errorMsg, "BufferEmpty");
                 stream->frame_count += oframes;
                 return (stream->last_callback = paAbort);

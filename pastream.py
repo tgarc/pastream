@@ -317,25 +317,25 @@ class _StreamBase(_sd._StreamBase):
 
     @pad.setter
     def pad(self, value):
-        # !Setting this value is *not* thread safe!  Note that the py_pastream
-        # callback doesn't act on 'pad' unless frames < 0; thus, set 'frames'
-        # first to get deterministic behavior.
-        if self.__frames >= 0 and value >= 0:
-            self.__frames = self._cstream.frames = value + self.__frames
+        # Note that the py_pastream callback doesn't act on 'pad' unless 
+        # frames < 0; thus, set 'frames' first to get deterministic behavior.
+        frames = self.__frames
+        if frames >= 0 and value >= 0:
+            self._cstream.frames = value + frames
         self._cstream.pad = value
 
     @property
     def frames(self):
-        # We fib a bit here: __frames != _cstream.frames. The former doesn't
-        # include any padding.
+        # We fib a bit here: __frames is _cstream.frames minus any padding
         return self.__frames
 
     @frames.setter
     def frames(self, value):
-        # !Setting this value is *not* thread safe!
-        # Set frames in an atomic manner
-        self._cstream.frames = value + self._cstream.pad \
-            if value > 0 and self._cstream.pad > 0 else value
+        pad = self._cstream.pad
+        if value > 0 and pad > 0:
+            self._cstream.frames = value + pad
+        else:
+            self._cstream.frames = value
         self.__frames = value
 
     def __enter__(self):
@@ -430,7 +430,7 @@ class _StreamBase(_sd._StreamBase):
 # Mix-in purely for adding chunks method
 class _InputStreamMixin(object):
 
-    def chunks(self, chunksize=None, overlap=0, frames=-1, always_2d=False, out=None):
+    def chunks(self, chunksize=None, overlap=0, frames=None, always_2d=False, out=None):
         """Read audio data in iterable chunks from a Portaudio stream.
 
         Similar in concept to PySoundFile library's
@@ -534,10 +534,12 @@ class _InputStreamMixin(object):
         wait_time = leadtime = 0
         done = False
         starttime = _time.time()
-        self.frames = frames
+        if frames is not None:
+            self.frames = frames
+
         self.start()
         try:
-            sleeptime = self.latency - _time.time() + starttime - rxbuff.read_available / self.samplerate
+            sleeptime = latency - _time.time() + starttime - rxbuff.read_available / self.samplerate
             if sleeptime > 0:
                 _time.sleep(max(self._cstream.offset / self.samplerate, sleeptime))
             while not (self.aborted or done):
@@ -1032,7 +1034,7 @@ def chunks(chunksize=None, overlap=0, frames=-1, always_2d=False, out=None,
         if kwargs.get('writer', None) is not None:
             stream = DuplexStream(**kwargs)
         elif playback is not None:
-            stream = SoundFileDuplexStream(playback, **kwargs)
+            stream = SoundFileDuplexStream(outf=playback, **kwargs)
         else:
             stream = InputStream(**kwargs)
     elif playback is None:
@@ -1040,7 +1042,7 @@ def chunks(chunksize=None, overlap=0, frames=-1, always_2d=False, out=None,
     else:
         stream = streamclass(playback, **kwargs)
     stream._autoclose = True
-    return stream.chunks(chunksize, overlap, always_2d, out)
+    return stream.chunks(chunksize, overlap, frames, always_2d, out)
 
 
 # Used solely for the pastream app

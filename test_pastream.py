@@ -89,21 +89,24 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
     with ps.SoundFileDuplexStream(outf=inp_fh, **devargs) as stream:
         delay = -1
         found_delay = False
-        unsigned_dtype = 'u%d'%stream.samplesize[1]
+        unsigned_dtype = 'u%d' % stream.samplesize[1]
         frames = mframes = 0
         inframes = np.zeros((len(stream.rxbuff), stream.channels[1]), dtype=stream.dtype[1])
+
         if outtype is not None:
             out = outtype(len(stream.rxbuff) * stream.rxbuff.elementsize)
         else:
             out = None
+
         t = looptime = 0
         for i, outframes in enumerate(stream.chunks(chunksize, out=out), start=1):
             if outtype is not None:
                 outframes = np.frombuffer(outframes, dtype=stream.dtype[0]).reshape(-1, stream.channels[0])
+
             dt = 1e3*(time.time() - t)
             if i > 1: looptime += dt
-            # print(dt, stream.rxbuff.read_available)
             t = time.time()
+
             if not found_delay:
                 matches = outframes.view(unsigned_dtype) == preamble
                 if np.any(matches):
@@ -120,7 +123,9 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
                 out = outframes[:readframes].view(unsigned_dtype)
                 npt.assert_array_equal(inp, out, "Loopback data mismatch")
                 mframes += readframes
+
             frames += len(outframes)
+
         assert delay != -1, "Preamble not found or was corrupted"
 
     stats = mframes, frames, delay, len(inpf2) - inpf2.tell(), looptime / i, stream._rmisses
@@ -244,8 +249,18 @@ def test_pad(random_soundfile_input, devargs):
     mframes, frames, delay, ntrunc = assert_chunks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
     assert ntrunc == 0
 
+def test_frames_wpad(devargs):
+    with ps.DuplexStream(**devargs) as stream:
+        stream.frames = 100
+        stream.pad = 1000
+        stream.txbuff.write(bytearray(stream.frames * stream.txbuff.elementsize))
+        stream.start()
+        stream.wait()
+        stream.stop()
+        assert stream.rxbuff.read_available == stream.frames + stream.pad
+
 def test_stream_replay(devargs):
-    with ps.DuplexStream(buffersize=65536, **devargs) as stream:
+    with ps.DuplexStream(**devargs) as stream:
         data = bytearray(len(stream.txbuff)*stream.txbuff.elementsize)
 
         # Start and let stream finish
@@ -253,14 +268,17 @@ def test_stream_replay(devargs):
         stream.start()
         assert stream.wait(2), "Timed out!"
         assert stream.finished
+        stream.rxbuff.flush()
 
         # Start stream, wait, then abort it
         stream.txbuff.write(data)
         stream.start()
         assert stream.active
+        stream.rxbuff.flush()
         stream.wait(0.001)
         stream.abort()
         assert stream.aborted
+        stream.rxbuff.flush()
 
         # Start stream then stop it
         stream.txbuff.write(data)
@@ -269,6 +287,7 @@ def test_stream_replay(devargs):
         stream.wait(0.001)
         stream.stop()
         assert stream.stopped
+        stream.rxbuff.flush()
 
 # For testing purposes
 class MyException(Exception):
