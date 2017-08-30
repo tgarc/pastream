@@ -4,26 +4,15 @@
 #include <math.h>
 
 
-void init_stream(
-    Py_PaBufferedStream *stream, 
-    long long frames,
-    long pad,
-    unsigned long offset,
-    PaUtilRingBuffer *rxbuff,
-    PaUtilRingBuffer *txbuff) 
+void init_stream(Py_PaStream *stream)
 {
-    stream->frames = (frames >= 0 && pad >= 0) ? (frames + pad) : frames;
-    // technically if frames < 0 padding has no meaning, but set it anyways to
-    // give the user the least unexpected behavior
-    stream->pad = pad;
-    stream->offset = offset;
-    stream->rxbuff = rxbuff;
-    stream->txbuff = txbuff;
+    *stream = Py_PaStream_default;
     reset_stream(stream);
 };
 
-void reset_stream(Py_PaBufferedStream *stream) {
-    memset((void *) stream->lastTime, 0, sizeof(PaStreamCallbackTimeInfo));
+void reset_stream(Py_PaStream *stream) {
+    memset((void *) &stream->lastTime, 0, sizeof(PaStreamCallbackTimeInfo));
+
     stream->last_callback = paContinue;
     stream->status = 0;
     stream->frame_count = 0;
@@ -39,16 +28,16 @@ void reset_stream(Py_PaBufferedStream *stream) {
 };
 
 int callback(
-    const void* in_data, 
-    void* out_data, 
-    unsigned long frame_count, 
-    const PaStreamCallbackTimeInfo* timeInfo, 
+    const void* in_data,
+    void* out_data,
+    unsigned long frame_count,
+    const PaStreamCallbackTimeInfo* timeInfo,
     PaStreamCallbackFlags status,
-    void *user_data) 
+    void *user_data)
 {
     unsigned long frames_left = frame_count, offset = 0;
     ring_buffer_size_t oframes_left = frame_count, oframes, iframes;
-    Py_PaBufferedStream *stream = (Py_PaBufferedStream *) user_data;
+    Py_PaStream *stream = (Py_PaStream *) user_data;
     long long frames = stream->frames;
     long pad = stream->pad;
 
@@ -88,7 +77,7 @@ int callback(
         if ( oframes < frames_left ) {
             // Fill the remainder of the output buffer with zeros
             memset((unsigned char *) out_data + oframes*stream->txbuff->elementSizeBytes,
-                   0, 
+                   0,
                    (frame_count - oframes)*stream->txbuff->elementSizeBytes);
 
             if ( frames < 0 ) {
@@ -133,7 +122,7 @@ int callback(
         }
     }
 
-    *stream->lastTime = *timeInfo;
+    stream->lastTime = *timeInfo;
     stream->frame_count += frame_count;
     return stream->last_callback;
 }

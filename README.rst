@@ -29,15 +29,15 @@ GIL-less Audio Callbacks
 
 Input Stream iterators
     Efficiently retrieve live audio capture data through an iterable. As simple as:
-        
-    .. code-block:: python 
+
+    .. code-block:: python
 
        import pastream as ps
        for chunk in ps.chunks():
            process(chunk)
-    
+
     See :meth:`pastream.chunks` and :meth:`pastream.InputStream.chunks` method.
-            
+
 Reader/Writer Threads
     pastream simplifies the process of implementing stream reader and writer
     threads to manipulate and/or generate data in the background while leaving
@@ -109,13 +109,20 @@ output to the html format)::
 
 Examples
 ----------------
-Record to file:
+Record 1000 frames to file, then play it back:
 
 .. code-block:: python
 
    import pastream as ps
 
-   with ps.SoundFileInputStream('recording.wav', device='my-device') as stream:
+   # Use *with* statements to auto-close the stream
+   with ps.SoundFileInputStream('recording.wav') as stream:
+       stream.frames = 1000
+       stream.start()
+       stream.wait() # Block until recording is done
+
+   with ps.SoundFileOutputStream('recording.wav') as stream:
+       stream.frames = 1000
        stream.start()
        stream.wait()
 
@@ -145,15 +152,15 @@ Display the help file::
     $ pastream -h
 
 List available audio devices::
-    
+
     $ pastream -l
 
 Simultaneous play and record from the default audio device::
-    
+
     $ pastream input.wav output.wav
 
 Pipe input from sox using the AU format::
-  
+
     $ sox -n -t au - synth sine 440 | pastream - output.wav
 
 Play a RAW file::

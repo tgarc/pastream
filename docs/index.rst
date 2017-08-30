@@ -25,11 +25,14 @@ API Reference
 .. autoclass:: InputStream
    :members: chunks
 
+.. autoclass:: RingBuffer
+   :inherited-members:
+
 .. include:: ../CHANGELOG.rst
 
 .. only:: html
 
    Index
    -----
- 
+
    :ref:`genindex`

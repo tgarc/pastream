@@ -31,7 +31,6 @@ import time as _time
 import sys as _sys
 import sounddevice as _sd
 import soundfile as _sf
-import weakref as _weakref
 from _py_pastream import ffi as _ffi, lib as _lib
 from pa_ringbuffer import init as _ringbuffer_init
 
@@ -104,17 +103,14 @@ class _StreamBase(_sd._StreamBase):
         # Set up the C portaudio callback
         self._cstream = _ffi.NULL
         self.__frames = frames
-        self.__weakref = _weakref.WeakKeyDictionary()
         if kwargs.get('callback', None) is None:
-            # Create the C Stream object
-            lastTime = _ffi.new('PaStreamCallbackTimeInfo*')
-            self._cstream = _ffi.new("Py_PaBufferedStream*")
-            self._cstream.lastTime = lastTime
-            self.__weakref[self._cstream] = lastTime
+            # Init the C PyPaStream object
+            self._cstream = _ffi.new("Py_PaStream*")
+            _lib.init_stream(self._cstream)
 
-            # Init the C BufferedStream object
-            _lib.init_stream(self._cstream, self.__frames, pad, offset,
-                _ffi.NULL, _ffi.NULL)
+            self.frames = frames
+            self.pad = pad
+            self.offset = offset
 
             # Cast our ring buffers for use in C
             if self.rxbuff is not None: self._cstream.rxbuff = \
@@ -281,7 +277,7 @@ class _StreamBase(_sd._StreamBase):
 
     @property
     def finished(self):
-        """Check whether the stream is in a finished state. 
+        """Check whether the stream is in a finished state.
 
         Will only be True if :meth:`start` has been called and the stream
         either completed sucessfully or was stopped/aborted.
@@ -304,7 +300,7 @@ class _StreamBase(_sd._StreamBase):
 
     @property
     def frame_count(self):
-        """Running total of frames that have been processed. 
+        """Running total of frames that have been processed.
 
         Each new starting of the stream resets this number to zero.
 
@@ -312,12 +308,20 @@ class _StreamBase(_sd._StreamBase):
         return self._cstream.frame_count
 
     @property
+    def offset(self):
+        return self._cstream.offset
+
+    @offset.setter
+    def offset(self, value):
+        self._cstream.offset = value
+
+    @property
     def pad(self):
         return self._cstream.pad
 
     @pad.setter
     def pad(self, value):
-        # Note that the py_pastream callback doesn't act on 'pad' unless 
+        # Note that the py_pastream callback doesn't act on 'pad' unless
         # frames < 0; thus, set 'frames' first to get deterministic behavior.
         frames = self.__frames
         if frames >= 0 and value >= 0:
@@ -541,7 +545,7 @@ class _InputStreamMixin(object):
         try:
             sleeptime = latency - _time.time() + starttime - rxbuff.read_available / self.samplerate
             if sleeptime > 0:
-                _time.sleep(max(self._cstream.offset / self.samplerate, sleeptime))
+                _time.sleep(max(self.offset / self.samplerate, sleeptime))
             while not (self.aborted or done):
                 # for thread safety, check the stream is active *before* reading
                 active = self.active
@@ -614,7 +618,7 @@ class InputStream(_InputStreamMixin, _StreamBase):
         Number of frames to record. A negative value (the default) causes
         recordings to continue indefinitely.
     offset : int, optional
-        Number of frames to discard from beginning of recording. 
+        Number of frames to discard from beginning of recording.
     reader : function, optional
         Dedicated function for reading from the input ring buffer.
 
@@ -832,7 +836,7 @@ class _SoundFileStreamBase(_StreamBase):
         chunksize = min(8192, len(rxbuff))
         sleeptime = (chunksize - rxbuff.read_available) / stream.samplerate
         if sleeptime > 0:
-            _time.sleep(max(sleeptime, stream._cstream.offset / stream.samplerate))
+            _time.sleep(max(sleeptime, stream.offset / stream.samplerate))
         while not stream.aborted:
             # for thread safety, check the stream is active *before* reading
             active = stream.active
@@ -924,7 +928,7 @@ class _SoundFileStreamBase(_StreamBase):
 
 
 class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
-    """Audio file recorder. 
+    """Audio file recorder.
 
     See :class:`SoundFileStream` for explanation of parameters.
 
@@ -947,7 +951,7 @@ class SoundFileInputStream(_InputStreamMixin, _SoundFileStreamBase):
 
 
 class SoundFileOutputStream(_SoundFileStreamBase):
-    """Audio file player. 
+    """Audio file player.
 
     See :class:`SoundFileStream` for explanation of parameters.
 
