@@ -6,4 +6,4 @@ include src/*.c src/*.h
 include build_pastream.py
 include portaudio/include/portaudio.h portaudio/src/common/pa_ringbuffer.h portaudio/src/common/pa_memorybarrier.h
 include docs/*.rst docs/Makefile docs/*.bat docs/*.py 
-include-recursive docs/_static docs/_template
+recursive-include docs/_static docs/_template
