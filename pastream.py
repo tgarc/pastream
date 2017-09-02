@@ -354,7 +354,8 @@ class _StreamBase(_sd._StreamBase):
         # Apparently when using a PaStreamFinishedCallback the stream
         # *must* be stopped before starting the stream again or the
         # streamFinishedCallback will never be called
-        super(_StreamBase, self).stop()
+        if self.__state != 0 and not self.stopped:
+            super(_StreamBase, self).stop()
 
         # Reset stream state machine
         with self.__statecond:

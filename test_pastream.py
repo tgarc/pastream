@@ -239,8 +239,17 @@ def test_offset(random_soundfile_input, devargs):
 
 def test_frames(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
-    mframes, frames, delay = assert_chunks_equal(inp_fh, preamble, dtype=dtype, frames=8192)[:3]
-    assert frames == 8192
+
+    with ps.DuplexStream(buffersize=1 << 15, **devargs) as stream:
+        for f in [1 << x for x in range(8, 16)]:
+            stream.frames = f
+            stream.txbuff.write(bytearray(stream.frames * stream.txbuff.elementsize))
+            stream.start()
+            stream.wait()
+            assert stream.rxbuff.read_available == stream.frames
+
+            stream.rxbuff.flush()
+            stream.txbuff.flush()
 
 def test_pad(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
@@ -249,15 +258,19 @@ def test_pad(random_soundfile_input, devargs):
     mframes, frames, delay, ntrunc = assert_chunks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
     assert ntrunc == 0
 
-def test_frames_wpad(devargs):
-    with ps.DuplexStream(**devargs) as stream:
-        stream.frames = 100
-        stream.pad = 1000
-        stream.txbuff.write(bytearray(stream.frames * stream.txbuff.elementsize))
-        stream.start()
-        stream.wait()
-        stream.stop()
-        assert stream.rxbuff.read_available == stream.frames + stream.pad
+def test_frames_pad_offset(devargs):
+    with ps.DuplexStream(buffersize=1<<17, **devargs) as stream:
+        for f, p, o in [(1 << x + 8, 1 << 16 - x, 1 << x + 6) for x in range(7)]:
+            stream.frames = f
+            stream.pad = p
+            stream.offset = o
+            stream.txbuff.write(bytearray(stream.frames * stream.txbuff.elementsize))
+            stream.start()
+            stream.wait()
+            assert stream.rxbuff.read_available == stream.frames + stream.pad - stream.offset
+
+            stream.rxbuff.flush()
+            stream.txbuff.flush()
 
 def test_stream_replay(devargs):
     with ps.DuplexStream(**devargs) as stream:
