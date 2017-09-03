@@ -374,12 +374,21 @@ class _StreamBase(_sd._StreamBase):
             self._txthread = _threading.Thread(**self._txthread_args)
             self._txthread.daemon = True
 
-    def start(self):
+    def start(self, prebuffer=True):
+        '''Start the audio stream
+
+        Parameters
+        ----------
+        prebuffer : bool, optional
+            For threading only: wait for the first output write before starting
+            the audio stream. If not using threads this has no effect.
+        '''
         self._prepare()
         if self._txthread is not None:
             self._txthread.start()
-            while not self.txbuff.read_available and self._txthread.is_alive():
-                _time.sleep(0.005)
+            if prebuffer:
+                while not self.txbuff.read_available and self._txthread.is_alive():
+                    _time.sleep(0.005)
             self._reraise_exceptions()
         super(_StreamBase, self).start()
         if self._rxthread is not None:
