@@ -33,7 +33,7 @@ setup(name='pastream',
       tests_require=['pytest>=3.0', 'numpy'],
       extras_require={
           'examples': ['numpy', 'matplotlib'],
-          'docs': ['sphinx_rtd_theme']
+          'docs': ['sphinx', 'sphinx_rtd_theme']
       },
       classifiers=[
           'License :: OSI Approved :: MIT License',
@@ -43,6 +43,6 @@ setup(name='pastream',
           'Programming Language :: Python :: 3',
           'Topic :: Multimedia :: Sound/Audio'
       ],
-      include_package_data=True,
+      include_package_data=False,
       zip_safe=False)
 
