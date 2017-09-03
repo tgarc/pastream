@@ -11,6 +11,7 @@ typedef struct Py_PaStream {
                                   // (< 0 means to pad playback whenever buffer is empty)
     unsigned long offset;         // Number of frames to skip from beginning of recordings
     unsigned long xruns;
+    ring_buffer_size_t txElementSize;
     unsigned long inputOverflows, inputUnderflows;
     unsigned long outputOverflows, outputUnderflows;
     PaUtilRingBuffer* rxbuff;     // Receive buffer
@@ -26,6 +27,7 @@ const Py_PaStream Py_PaStream_default = {
     paContinue,
     0,
     -1,
+    0,
     0,
     0,
     0,

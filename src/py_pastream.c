@@ -109,6 +109,9 @@ int callback(
             }
         }
     }
+    else if ( out_data != NULL ) {
+        memset((unsigned char *) out_data, 0, frame_count*stream->txElementSize);
+    }
 
     if ( stream->rxbuff != NULL && stream->frame_count + frames_left > stream->offset ) {
         if ( stream->frame_count < stream->offset ) {
