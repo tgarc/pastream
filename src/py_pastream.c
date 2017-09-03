@@ -70,7 +70,10 @@ int callback(
     }
 
     if ( stream->txbuff != NULL ) {
-        oframes = PaUtil_ReadRingBuffer(stream->txbuff, out_data, oframes_left);
+        if ( !stream->__autoframes )
+            oframes = PaUtil_ReadRingBuffer(stream->txbuff, out_data, oframes_left);
+        else
+            oframes = 0;
 
         // We're done reading frames! Or the writer was too slow; either way,
         // finish up by adding some zero padding.

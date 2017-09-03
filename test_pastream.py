@@ -258,6 +258,22 @@ def test_pad(random_soundfile_input, devargs):
     mframes, frames, delay, ntrunc = assert_chunks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
     assert ntrunc == 0
 
+# This tests the condition where frames = -1 and pad >= 0. It makes sure that
+# once the txbuff is found to be empty, it goes to 'autoframes' mode and never
+# tries to read the txbuff again
+def test_autoframes(devargs):
+    with ps.DuplexStream(buffersize=1<<17, **devargs) as stream:
+        stream.pad = int(stream.samplerate)
+        stream.frames = -1
+        stream.txbuff.write(bytearray(1024 * stream.txbuff.elementsize))
+        stream.start()
+        while stream.txbuff.read_available:
+            time.sleep(0.01)
+        stream.txbuff.write(bytearray(1024 * stream.txbuff.elementsize))
+        stream.wait()
+        assert stream.txbuff.read_available == 1024
+        assert stream.rxbuff.read_available == 1024 + int(stream.samplerate)
+
 def test_frames_pad_offset(devargs):
     with ps.DuplexStream(buffersize=1<<17, **devargs) as stream:
         for f, p, o in [(1 << x + 8, 1 << 16 - x, 1 << x + 6) for x in range(7)]:
