@@ -1,6 +1,23 @@
 Release Notes
 =============
 
+0.0.8:
+  * BUG: fixed possible bad behavior when pad >= 0 frames < 0 (06881)
+
+  * BUG: pad > 0 can cause too many frame reads (fixed in e917e)
+
+  * Receive buffer is no longer automatically flushed when calling start()
+    (cd65b)
+
+  * BUG: AttributeError was not correctly being caught and reraised in stream
+    threads (3bc5e)
+
+  * Added sphinx documentation (11c13)
+
+  * ``frames`` attribute changed from ``long`` to ``long long`` (ee4ebb)
+
+  * chunks: eliminated an unnecessary copy when using ``overlap`` (b0304)
+
 0.0.7:
   * add *--loop* option to the CLI to allow looping playback.
 

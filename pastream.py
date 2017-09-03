@@ -35,7 +35,7 @@ from _py_pastream import ffi as _ffi, lib as _lib
 from pa_ringbuffer import init as _ringbuffer_init
 
 
-__version__ = '0.0.7'
+__version__ = '0.0.8'
 __usage__ = "%(prog)s [options] input output"
 
 

@@ -36,7 +36,7 @@ Input Stream iterators
        for chunk in ps.chunks():
            process(chunk)
 
-    See :meth:`pastream.chunks` and :meth:`pastream.InputStream.chunks` method.
+    See ``pastream.chunks`` and ``pastream.InputStream.chunks`` method.
 
 Reader/Writer Threads
     pastream simplifies the process of implementing stream reader and writer
