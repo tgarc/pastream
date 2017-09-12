@@ -1,4 +1,5 @@
 #define MAX_MESSAGE_LEN 128
+/* #define PYPA_DEBUG      1 */
 
 
 typedef struct Py_PaStream {
@@ -14,8 +15,8 @@ typedef struct Py_PaStream {
     ring_buffer_size_t txElementSize;
     unsigned long inputOverflows, inputUnderflows;
     unsigned long outputOverflows, outputUnderflows;
-    PaUtilRingBuffer* rxbuff;     // Receive buffer
-    PaUtilRingBuffer* txbuff;     // Transmit buffer
+    PaUtilRingBuffer* rxbuffer;     // Receive buffer
+    PaUtilRingBuffer* txbuffer;     // Transmit buffer
     char errorMsg[MAX_MESSAGE_LEN];  // Reserved for errors raised in the audio callback
     unsigned char __autoframes;   // Internal use only
 } Py_PaStream;
@@ -23,7 +24,7 @@ typedef struct Py_PaStream {
 // :sigh: Visual Studio doesn't support designated initializors
 const Py_PaStream Py_PaStream_default = {
     0,
-    0,
+    { 0 },
     paContinue,
     0,
     -1,
@@ -35,9 +36,9 @@ const Py_PaStream Py_PaStream_default = {
     0,
     0,
     0,
-    NULL,
-    NULL,
-    '\0',
+    (PaUtilRingBuffer*) NULL,
+    (PaUtilRingBuffer*) NULL,
+    { '\0' },
     0
 };
 

@@ -2,6 +2,9 @@
 #include <pa_ringbuffer.h>
 #include "py_pastream.h"
 #include <math.h>
+#ifdef PYPA_DEBUG
+#include <stdio.h>
+#endif
 
 
 void init_stream(Py_PaStream *stream)
@@ -36,7 +39,7 @@ int callback(
     void *user_data)
 {
     unsigned long frames_left = frame_count, offset = 0;
-    ring_buffer_size_t oframes_left = frame_count, oframes, iframes;
+    ring_buffer_size_t oframes_left = frame_count, oframes = 0, iframes;
     Py_PaStream *stream = (Py_PaStream *) user_data;
     long long frames = stream->frames;
     long pad = stream->pad;
@@ -69,19 +72,19 @@ int callback(
         }
     }
 
-    if ( stream->txbuff != NULL ) {
-        if ( !stream->__autoframes )
-            oframes = PaUtil_ReadRingBuffer(stream->txbuff, out_data, oframes_left);
-        else
+    if ( stream->txbuffer != NULL ) {
+        if ( stream->__autoframes )
             oframes = 0;
+        else
+            oframes = PaUtil_ReadRingBuffer(stream->txbuffer, out_data, oframes_left);
 
         // We're done reading frames! Or the writer was too slow; either way,
         // finish up by adding some zero padding.
         if ( oframes < frames_left ) {
             // Fill the remainder of the output buffer with zeros
-            memset((unsigned char *) out_data + oframes*stream->txbuff->elementSizeBytes,
+            memset((unsigned char *) out_data + oframes*stream->txbuffer->elementSizeBytes,
                    0,
-                   (frame_count - oframes)*stream->txbuff->elementSizeBytes);
+                   (frame_count - oframes)*stream->txbuffer->elementSizeBytes);
 
             if ( frames < 0 ) {
                 if ( pad >= 0 ) {
@@ -105,7 +108,7 @@ int callback(
             else if ( !stream->__autoframes && pad >= 0 && oframes < oframes_left) {
                 strcpy(stream->errorMsg, "BufferEmpty");
                 stream->frame_count += oframes;
-                return (stream->last_callback = paAbort);
+                return stream->last_callback = paAbort;
             }
         }
     }
@@ -113,18 +116,18 @@ int callback(
         memset((unsigned char *) out_data, 0, frame_count*stream->txElementSize);
     }
 
-    if ( stream->rxbuff != NULL && stream->frame_count + frames_left > stream->offset ) {
+    if ( stream->rxbuffer != NULL && stream->frame_count + frames_left > stream->offset ) {
         if ( stream->frame_count < stream->offset ) {
             offset = stream->offset - stream->frame_count;
             frames_left -= offset;
-            in_data = (unsigned char *) in_data + offset*stream->rxbuff->elementSizeBytes;
+            in_data = (unsigned char *) in_data + offset*stream->rxbuffer->elementSizeBytes;
         }
 
-        iframes = PaUtil_WriteRingBuffer(stream->rxbuff, (const void *) in_data, frames_left);
+        iframes = PaUtil_WriteRingBuffer(stream->rxbuffer, (const void *) in_data, frames_left);
         if ( iframes < frames_left ) {
             strcpy(stream->errorMsg, "BufferFull");
             stream->frame_count += iframes;
-            return (stream->last_callback = paAbort);
+            return stream->last_callback = paAbort;
         }
     }
 
