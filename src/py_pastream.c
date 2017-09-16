@@ -25,9 +25,9 @@ void reset_stream(Py_PaStream *stream) {
     stream->inputOverflows = 0;
     stream->outputUnderflows = 0;
     stream->outputOverflows = 0;
-    if ( stream->__autoframes )
+    if ( stream->_autoframes )
         stream->frames = -1;
-    stream->__autoframes = 0;
+    stream->_autoframes = 0;
 };
 
 int callback(
@@ -39,8 +39,8 @@ int callback(
     void *user_data)
 {
     unsigned long frames_left = frame_count, offset = 0;
-    ring_buffer_size_t oframes_left = frame_count, oframes = 0, iframes;
-    Py_PaStream *stream = (Py_PaStream *) user_data;
+    ring_buffer_size_t oframes_left = frame_count, oframes = 0, iframes, tempframes;
+    Py_PaStream * stream = (Py_PaStream *) user_data;
     long long frames = stream->frames;
     long pad = stream->pad;
 
@@ -73,10 +73,20 @@ int callback(
     }
 
     if ( stream->txbuffer != NULL ) {
-        if ( stream->__autoframes )
+        if ( stream->_autoframes )
             oframes = 0;
         else
             oframes = PaUtil_ReadRingBuffer(stream->txbuffer, out_data, oframes_left);
+
+        // TODO: add loop mode
+        if ( stream->loop ) {
+            while ( oframes < oframes_left ) {
+                tempframes = stream->txbuffer->readIndex;
+                PaUtil_FlushRingBuffer(stream->txbuffer);
+                PaUtil_AdvanceRingBufferWriteIndex(stream->txbuffer, tempframes);
+                oframes += PaUtil_ReadRingBuffer(stream->txbuffer, out_data, oframes_left);
+            }
+        }
 
         // We're done reading frames! Or the writer was too slow; either way,
         // finish up by adding some zero padding.
@@ -90,7 +100,7 @@ int callback(
                 if ( pad >= 0 ) {
                     // Figure out how much additional padding to insert and set frames
                     // equal to it
-                    stream->__autoframes = 1;
+                    stream->_autoframes = 1;
                     frames = stream->frames = stream->frame_count + oframes + pad;
 
                     // exit point (2 of 2)
@@ -105,7 +115,7 @@ int callback(
                 }
                 // else { pad indefinitely; }
             }
-            else if ( !stream->__autoframes && pad >= 0 && oframes < oframes_left) {
+            else if ( !stream->_autoframes && pad >= 0 && oframes < oframes_left) {
                 strcpy(stream->errorMsg, "BufferEmpty");
                 stream->frame_count += oframes;
                 return stream->last_callback = paAbort;
