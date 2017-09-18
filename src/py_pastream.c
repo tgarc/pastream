@@ -38,8 +38,10 @@ int callback(
     PaStreamCallbackFlags status,
     void *user_data)
 {
-    unsigned long frames_left = frame_count, offset = 0;
-    ring_buffer_size_t oframes_left = frame_count, oframes = 0, iframes, tempframes;
+    unsigned long offset = 0;
+    ring_buffer_size_t frames_left = frame_count;
+    ring_buffer_size_t oframes_left = frame_count;
+    ring_buffer_size_t oframes = 0, iframes, tempframes;
     Py_PaStream * stream = (Py_PaStream *) user_data;
     long long frames = stream->frames;
     long pad = stream->pad;
@@ -57,13 +59,15 @@ int callback(
             stream->outputOverflows++;
     }
 
-    // exit point (1 of 2)
-    // We've surpassed frames: this is our last callback
     if ( frames >= 0 ) {
+        // exit point (1 of 2)
+        // We've surpassed frames: this is our last callback
         if ( stream->frame_count + frames_left >= frames ) {
             frames_left = frames - stream->frame_count;
             stream->last_callback = paComplete;
         }
+
+        // Calcuate how many output frames are left to read (minus any padding)
         if ( pad >= 0 && stream->frame_count + frames_left + pad >= frames ) {
             if ( abs(frames - pad) > stream->frame_count )
                 oframes_left = abs(frames - pad) - stream->frame_count;
@@ -72,58 +76,59 @@ int callback(
         }
     }
 
-    if ( stream->txbuffer != NULL ) {
-        if ( stream->_autoframes )
-            oframes = 0;
-        else
-            oframes = PaUtil_ReadRingBuffer(stream->txbuffer, out_data, oframes_left);
+    if ( out_data != NULL && (stream->txbuffer == NULL || stream->_autoframes) ) {
+        memset((unsigned char *) out_data, 0, frame_count*stream->txElementSize);
+    }
+    else if ( stream->txbuffer != NULL ) {
+        oframes = PaUtil_ReadRingBuffer(stream->txbuffer, out_data, oframes_left);
 
-        // TODO: add loop mode
+        // loop mode: this assumes that the buffer is only written before
+        // stream is started (and never while its active), so we can safely
+        // rewind when we hit the end
         if ( stream->loop ) {
             while ( oframes < oframes_left ) {
                 tempframes = stream->txbuffer->readIndex;
+
+                // just in case frames == 0 or by some mistake the txbuffer is empty
+                if ( tempframes == 0 ) break;
+
                 PaUtil_FlushRingBuffer(stream->txbuffer);
                 PaUtil_AdvanceRingBufferWriteIndex(stream->txbuffer, tempframes);
                 oframes += PaUtil_ReadRingBuffer(stream->txbuffer, out_data, oframes_left);
             }
         }
 
-        // We're done reading frames! Or the writer was too slow; either way,
-        // finish up by adding some zero padding.
-        if ( oframes < frames_left ) {
-            // Fill the remainder of the output buffer with zeros
+        // No matter what happens, fill the remainder of the output buffer with zeros
+        if ( oframes < frame_count )
             memset((unsigned char *) out_data + oframes*stream->txbuffer->elementSizeBytes,
                    0,
                    (frame_count - oframes)*stream->txbuffer->elementSizeBytes);
 
+        // We're done reading frames! Or the writer was too slow
+        if ( oframes < frames_left && pad >= 0) {
             if ( frames < 0 ) {
-                if ( pad >= 0 ) {
-                    // Figure out how much additional padding to insert and set frames
-                    // equal to it
-                    stream->_autoframes = 1;
-                    frames = stream->frames = stream->frame_count + oframes + pad;
+                // Now that we've reached the end of buffer, calculate our
+                // final frame count including padding and enter autoframes
+                // mode
+                stream->_autoframes = 1;
+                frames = stream->frames = stream->frame_count + oframes + pad;
 
-                    // exit point (2 of 2)
-                    // We don't want to do an unncessary callback; end here
-                    if ( stream->frame_count + frames_left >= frames ) {
-                        if ( stream->frame_count <= frames )
-                            frames_left = frames - stream->frame_count;
-                        else
-                            frames_left = 0;
-                        stream->last_callback = paComplete;
-                    }
+                // exit point (2 of 2)
+                // We don't want to do an unncessary callback; end here
+                if ( stream->frame_count + frames_left >= frames ) {
+                    if ( stream->frame_count <= frames )
+                        frames_left = frames - stream->frame_count;
+                    else
+                        frames_left = 0;
+                    stream->last_callback = paComplete;
                 }
-                // else { pad indefinitely; }
             }
-            else if ( !stream->_autoframes && pad >= 0 && oframes < oframes_left) {
+            else {
                 strcpy(stream->errorMsg, "BufferEmpty");
                 stream->frame_count += oframes;
                 return stream->last_callback = paAbort;
             }
         }
-    }
-    else if ( out_data != NULL ) {
-        memset((unsigned char *) out_data, 0, frame_count*stream->txElementSize);
     }
 
     if ( stream->rxbuffer != NULL && stream->frame_count + frames_left > stream->offset ) {

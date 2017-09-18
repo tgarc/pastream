@@ -1,5 +1,5 @@
 #define MAX_MESSAGE_LEN 128
-/* #define PYPA_DEBUG      1 */
+// #define PYPA_DEBUG      1
 
 
 typedef struct Py_PaStream {
