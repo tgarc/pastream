@@ -77,7 +77,7 @@ class RingBuffer(_RingBufferBase):
         return ProxyRingBuffer(pointer)
 
 
-class _OneShotBuffer(RingBuffer):
+class _LinearBuffer(RingBuffer):
     """(internal) RingBuffer interface for casting non-power-of-2 sized buffers
 
     This class is essentially the same as RingBuffer but lies to the underlying
@@ -104,21 +104,14 @@ class _OneShotBuffer(RingBuffer):
             raise ValueError('buffer size must be multiple of elementsize')
         self._data = data
 
-        assert self._lib.PaUtil_InitializeRingBuffer(
-            self._ptr, elementsize, 1 << int(_math.ceil( _math.log2(size) )), self._data) == 0
+        falsesize = 1 << int(_math.ceil( _math.log(size, 2) )) if size else 0
+        rcode = self._lib.PaUtil_InitializeRingBuffer(self._ptr, elementsize,
+                                                      falsesize, self._data)
+        assert rcode == 0
 
-
-def _add_file_closer(stream, outf, out_fh, inpf, inp_fh):
-    origclose = stream.close
-    def close():
-        try:
-            origclose()
-        finally:
-            if not (outf is None or isinstance(outf, _sf.SoundFile)):
-                out_fh.close()
-            if not (inpf is None or isinstance(inpf, _sf.SoundFile)):
-                inp_fh.close()
-    stream.close = close
+        # we manually assign the buffersize; this will keep us from going over
+        # the buffer bounds
+        self._ptr.bufferSize = size
 
 
 def _allocate_stream_buffer(stream, size, kind, always_2d=False, bufferclass=bytearray):
@@ -289,8 +282,7 @@ def _soundfile_from_stream(stream, file, mode, **kwargs):
                 subtype=subtype, format=fformat, **kwargs)
 
 
-# Default handler for writing input from a Stream to a SoundFile
-# object
+# Default handler for writing input from a Stream to a SoundFile object
 def _soundfilerecorder(stream, rxbuffer, inp_fh):
     if stream.isduplex:
         dtype = stream.dtype[0]
@@ -300,7 +292,7 @@ def _soundfilerecorder(stream, rxbuffer, inp_fh):
     chunksize = min(8192, len(rxbuffer))
     sleeptime = (chunksize - rxbuffer.read_available) / stream.samplerate
     if sleeptime > 0:
-        _time.sleep(max(sleeptime, stream.offset / stream.samplerate))
+        _time.sleep(max(sleeptime, stream._offset / stream.samplerate))
     while not stream.aborted:
         # for thread safety, check the stream is active *before* reading
         active = stream.active
@@ -324,8 +316,8 @@ def _soundfilerecorder(stream, rxbuffer, inp_fh):
             _time.sleep(sleeptime)
 
 
-# Default handler for reading input from a SoundFile object and writing it
-# to a Stream
+# Default handler for reading input from a SoundFile object and writing it to a
+# Stream
 def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
     readinto = out_fh.buffer_read_into
     if stream.isduplex:
@@ -349,30 +341,22 @@ def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
             stream.wait(0.0025)
             continue
 
-        frames = _lib.PaUtil_GetRingBufferWriteRegions(
-            txbuffer._ptr, frames, ptr1, size1, ptr2, size2)
-        buffregn1 = _ffi.buffer(ptr1[0], size1[0] * txbuffer.elementsize)
-        buffregn2 = _ffi.buffer(ptr2[0], size2[0] * txbuffer.elementsize)
-
+        frames, buffregn1, buffregn2 = txbuffer.get_write_buffers(frames)
         readframes = readinto(buffregn1, dtype=dtype)
         if len(buffregn2):
             readframes += readinto(buffregn2, dtype=dtype)
 
-        # TODO: use memoryview instead of buffer pointers
         if loop:
-            bytesz1 = size1[0] * txbuffer.elementsize
-            bytesz2 = size2[0] * txbuffer.elementsize
+            # grab a memoryview to avoid copies
+            buffregn1 = memoryview(buffregn1)
+            buffregn2 = memoryview(buffregn2)
             while readframes < frames:
                 out_fh.seek(0)
                 readbytes = readframes * txbuffer.elementsize
-                if readbytes < bytesz1:
-                    buffregn1 = _ffi.buffer(ptr1[0] + readbytes,
-                                            bytesz1 - readbytes)
-                    readframes += readinto(buffregn1, dtype=dtype)
+                if readbytes < len(buffregn1):
+                    readframes += readinto(buffregn1[readbytes:], dtype=dtype)
                 else:
-                    buffregn2 = _ffi.buffer(ptr2[0] + readbytes - bytesz1,
-                                            bytesz2 + bytesz1 - readbytes)
-                    readframes += readinto(buffregn2, dtype=dtype)
+                    readframes += readinto(buffregn2[readbytes-len(buffregn1):], dtype=dtype)
         txbuffer.advance_write_index(readframes)
         if readframes < frames:
             break
@@ -472,7 +456,7 @@ class Stream(_sd._StreamBase):
             self._rxthread_args = args, kwargs
 
         # Only allocate a new buffer if an appropriate one is not already assigned
-        if not isinstance(buffer, RingBuffer) or len(buffer) < buffersize:
+        if not isinstance(buffer, RingBuffer) or len(buffer) != buffersize:
             buffer = _allocate_stream_buffer(self, buffersize, kind, bufferclass=RingBuffer)
             self._set_ringbuffer(kind, buffer)
 
@@ -610,19 +594,19 @@ class Stream(_sd._StreamBase):
         return self._cstream.frame_count
 
     @property
-    def offset(self):
+    def _offset(self):
         return self._cstream.offset
 
-    @offset.setter
-    def offset(self, value):
+    @_offset.setter
+    def _offset(self, value):
         self._cstream.offset = value
 
     @property
-    def pad(self):
+    def _pad(self):
         return self._cstream.pad
 
-    @pad.setter
-    def pad(self, value):
+    @_pad.setter
+    def _pad(self, value):
         # Note that the py_pastream callback doesn't act on 'pad' unless
         # frames < 0; thus, set 'frames' first to get deterministic behavior.
         frames = self.__frames
@@ -633,12 +617,12 @@ class Stream(_sd._StreamBase):
         self._cstream.pad = value
 
     @property
-    def frames(self):
+    def _frames(self):
         # We fib a bit here: __frames is _cstream.frames minus any padding
         return self.__frames
 
-    @frames.setter
-    def frames(self, value):
+    @_frames.setter
+    def _frames(self, value):
         pad = self._cstream.pad
         if value > 0 and pad > 0:
             self._cstream.frames = value + pad
@@ -775,6 +759,7 @@ class _OutputStreamMixin(object):
                 raise ValueError("Playback file samplerate/channels mismatch")
             if loop and not playback.seekable():
                 raise ValueError("Can't loop playback; file is not seekable")
+            self._cstream.loop = 0
         else:
             try:
                 data = _ffi.from_buffer(playback)
@@ -782,21 +767,27 @@ class _OutputStreamMixin(object):
                 data = playback
             frames = len(data) // elementsize
 
-            playback = _OneShotBuffer(elementsize, data)
+            playback = _LinearBuffer(elementsize, data)
             playback.advance_write_index(frames)
             self._set_ringbuffer('output', playback)
+            self._cstream.loop = loop
 
-        self._cstream.loop = int(loop)
+            # null out any thread that was previously set
+            self._txthread_args = None
+
         return playback
 
     def play(self, playback, frames=-1, pad=0, loop=False, blocking=False):
-        self._set_playback(playback, loop)
-        self._cstream.rxbuffer = _ffi.NULL
-        self._rxbuffer = None
+        # Null out any rx thread or rx buffer pointer but note that we
+        # intentionally do not clear the _rxbuffer in case that memory could be
+        # used again
         self._rxthread_args = None
+        self._cstream.rxbuffer = _ffi.NULL
 
-        self.pad = pad
-        self.frames = frames
+        self._set_playback(playback, loop)
+
+        self._pad = pad
+        self._frames = frames
 
         self.start()
         if blocking:
@@ -822,8 +813,11 @@ class _InputStreamMixin(object):
         elif isinstance(out, bytes):
             raise TypeError("out buffer type is read-only")
 
-        buffer = _OneShotBuffer(elementsize, out)
+        buffer = _LinearBuffer(elementsize, out)
         self._set_ringbuffer('input', buffer)
+
+        # null out any thread that was previously set
+        self._rxthread_args = None
 
         return buffer
 
@@ -840,22 +834,22 @@ class _InputStreamMixin(object):
         if out is None:
             out = _allocate_stream_buffer(self, frames - offset, 'input')
 
+        # Null out any previously set tx buffer/threads (see comment in play())
+        self._txthread_args = None
+        self._cstream.txbuffer = _ffi.NULL
+
         capture = self._set_capture(out)
         isbuffer = not isinstance(capture, _sf.SoundFile)
-        self._cstream.txbuffer = _ffi.NULL
-        self._txbuffer = None
-        self._txthread_args = None
-
         if frames is not None:
-            self.frames = frames
+            self._frames = frames
             if isbuffer:
-                assert frames > len(capture) - offset
+                assert frames <= len(capture) + offset
         elif isbuffer:
-            self.frames = len(capture) + offset
+            self._frames = len(capture) + offset
         else:
-            self.frames = -1
+            self._frames = -1
 
-        self.offset = offset
+        self._offset = offset
 
         self.start()
         if blocking:
@@ -922,8 +916,8 @@ class _InputStreamMixin(object):
         rxbuffer = _allocate_stream_buffer(self, _PA_BUFFERSIZE, 'input', bufferclass=RingBuffer)
         self._set_ringbuffer('input', rxbuffer)
 
-        self.frames = frames
-        self.pad = pad
+        self._frames = frames
+        self._pad = pad
         if playback is not None:
             if not self.isduplex:
                 raise ValueError("playback not supported; this stream is input only")
@@ -985,13 +979,13 @@ class _InputStreamMixin(object):
         wait_time = leadtime = 0
         done = False
         starttime = _time.time()
-        self.offset = offset
+        self._offset = offset
 
         self.start()
         try:
             sleeptime = latency - _time.time() + starttime - rxbuffer.read_available / self.samplerate
             if sleeptime > 0:
-                _time.sleep(max(self.offset / self.samplerate, sleeptime))
+                _time.sleep(max(self._offset / self.samplerate, sleeptime))
             while not (self.aborted or done):
                 # for thread safety, check the stream is active *before* reading
                 active = self.active
@@ -1172,22 +1166,21 @@ class DuplexStream(InputStream, OutputStream):
             # frames < offset case?
             if frames is None:
                 frames = len(playback)
-            out = _allocate_stream_buffer(self,
-                    frames - offset + (pad if pad >= 0 else 0), 'input')
+            out = _allocate_stream_buffer(self, frames - offset + (pad if pad >= 0 else 0), 'input')
 
         capture = self._set_capture(out)
         isbuffer = not isinstance(capture, _sf.SoundFile)
         if frames is not None:
-            self.frames = frames
+            self._frames = frames
             if isbuffer:
-                assert frames > len(capture) - offset + (pad if pad >= 0 else 0)
+                assert frames + (pad if pad >= 0 else 0) <= len(capture) + offset
         elif isbuffer:
-            self.frames = len(capture) + offset
+            self._frames = len(capture) + offset
         else:
-            self.frames = -1
+            self._frames = -1
 
-        self.offset = offset
-        self.pad = pad
+        self._offset = offset
+        self._pad = pad
 
         self.start()
         if blocking:
@@ -1233,13 +1226,26 @@ def chunks(chunksize=None, overlap=0, frames=-1, pad=0, offset=0,
     return stream.chunks(chunksize, overlap, frames, pad, offset, always_2d, playback, loop, out)
 
 
+def _add_file_closer(stream, outf, out_fh, inpf, inp_fh):
+    origclose = stream.close
+    def close():
+        try:
+            origclose()
+        finally:
+            if not (outf is None or isinstance(outf, _sf.SoundFile)):
+                out_fh.close()
+            if not (inpf is None or isinstance(inpf, _sf.SoundFile)):
+                inp_fh.close()
+    stream.close = close
+
+
 def fileplayer(outf, frames=-1, pad=0, loop=False, duplex=False, buffersize=None, **kwargs):
     stream, null, out_fh = _from_file('duplex' if duplex else 'output', None, outf, **kwargs)
 
     stream._set_playback(out_fh, loop, buffersize)
 
-    stream.frames = frames
-    stream.pad = pad
+    stream._frames = frames
+    stream._pad = pad
 
     _add_file_closer(stream, outf, out_fh, None, None)
 
@@ -1250,23 +1256,23 @@ def filerecorder(inpf, frames=-1, offset=0, duplex=False, buffersize=None, **kwa
     stream, inp_fh, null = _from_file('duplex' if duplex else 'input', inpf, None, **kwargs)
 
     stream._set_capture(inp_fh, buffersize)
-    stream.frames = frames
-    stream.offset = offset
+    stream._frames = frames
+    stream._offset = offset
 
     _add_file_closer(stream, None, None, inpf, inp_fh)
 
     return stream
 
 
-def fileplayrecorder(inpf, outf, frames=-1, offset=0, pad=0, loop=False, buffersize=None, **kwargs):
+def fileplayrecorder(inpf, outf, frames=-1, pad=0, offset=0, loop=False, buffersize=None, **kwargs):
     stream, inp_fh, out_fh = _from_file('duplex', inpf, outf, **kwargs)
 
     stream._set_playback(out_fh, loop, buffersize)
     stream._set_capture(inp_fh, buffersize)
 
-    stream.frames = frames
-    stream.offset = offset
-    stream.pad = pad
+    stream._frames = frames
+    stream._offset = offset
+    stream._pad = pad
 
     _add_file_closer(stream, outf, out_fh, inpf, inp_fh)
 
