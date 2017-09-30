@@ -79,27 +79,29 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated"
           % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
 
-def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None, outtype=None, **kwargs):
+def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None, outtype=None, 
+                        pad=0, offset=0, frames=-1, **kwargs):
     devargs = dict(DEVICE_KWARGS)
     devargs.update(kwargs)
 
     inpf2 = sf.SoundFile(inp_fh.name.name)
 
     inp_fh.seek(0)
-    with ps.SoundFileDuplexStream(outf=inp_fh, **devargs) as stream:
+    with ps.DuplexStream(**devargs) as stream:
         delay = -1
         found_delay = False
         unsigned_dtype = 'u%d' % stream.samplesize[1]
-        frames = mframes = 0
-        inframes = np.zeros((len(stream.rxbuff), stream.channels[1]), dtype=stream.dtype[1])
+        nframes = mframes = 0
+        inframes = np.zeros((ps._PA_BUFFERSIZE, stream.channels[1]), dtype=stream.dtype[1])
 
         if outtype is not None:
-            out = outtype(len(stream.rxbuff) * stream.rxbuff.elementsize)
+            out = outtype(ps._PA_BUFFERSIZE * stream.samplesize[0] * stream.channels[0])
         else:
             out = None
 
         t = looptime = 0
-        for i, outframes in enumerate(stream.chunks(chunksize, out=out), start=1):
+        for i, outframes in enumerate(stream.chunks(chunksize, 0, frames, pad,
+                                                    offset, playback=inp_fh, out=out), start=1):
             if outtype is not None:
                 outframes = np.frombuffer(outframes, dtype=stream.dtype[0]).reshape(-1, stream.channels[0])
 
@@ -112,9 +114,9 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
                 if np.any(matches):
                     found_delay = True
                     mindices = np.where(matches)[0]
-                    frames += mindices[0]
-                    delay = frames
-                    if compensate_delay: stream.pad = delay
+                    nframes += mindices[0]
+                    delay = nframes
+                    if compensate_delay: stream._pad = delay
                     outframes = outframes[mindices[0]:]
 
             if found_delay:
@@ -124,11 +126,11 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
                 npt.assert_array_equal(inp, out, "Loopback data mismatch")
                 mframes += readframes
 
-            frames += len(outframes)
+            nframes += len(outframes)
 
         assert delay != -1, "Preamble not found or was corrupted"
 
-    stats = mframes, frames, delay, len(inpf2) - inpf2.tell(), looptime / i, stream._rmisses
+    stats = mframes, nframes, delay, len(inpf2) - inpf2.tell(), looptime / i, stream._rmisses
     print("Matched %d of %d frames; Initial delay of %d frames; %d frames truncated; %f interlooptime; %d misses"
           % stats)
     return stats
@@ -206,7 +208,7 @@ def test_soundfilestream_loopback(random_soundfile_input, devargs):
     devargs['dtype'] = dtype
 
     outf = tempfile.TemporaryFile()
-    with ps.SoundFileDuplexStream(outf, inp_fh, format='wav', **devargs) as stream:
+    with ps.fileplayrecorder(outf, inp_fh, format='wav', **devargs) as stream:
         stream.start()
         stream.wait()
 
@@ -221,7 +223,7 @@ def test_stdin_stdout_loopback(random_soundfile_input, devargs):
 
     inp_fh.name.seek(0)
 
-    proc = subprocess.Popen(('pastream -twav - -tau - -d=%s -f=int32' % devargs['device']).split(),
+    proc = subprocess.Popen(('pastream - - -t au -d=%s -f=int32' % devargs['device']).split(),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     stdout = io.BytesIO(proc.communicate(inp_fh.name.read())[0])
 
@@ -232,99 +234,112 @@ def test_stdin_stdout_loopback(random_soundfile_input, devargs):
 def test_offset(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
-    # Using offset only should drop 'offset' frames from the recording
-    offset = 8 # use a minimal offset so we don't drop the original input frames
-    mframes, frames = assert_chunks_equal(inp_fh, preamble, dtype=dtype, offset=offset)[:2]
-    assert frames == (len(inp_fh) - offset)
+    with ps.DuplexStream(**devargs) as stream:
+        for o in [1 << x for x in range(8, 10)]:
+            out = stream.playrec(inp_fh, 1024, offset=o, blocking=True)
+            assert len(out) == 1024 - o
+            inp_fh.seek(0)
 
-def test_frames(random_soundfile_input, devargs):
+def test_frames(devargs, random_soundfile_input):
     inp_fh, preamble, dtype = random_soundfile_input
 
-    with ps.DuplexStream(buffersize=1 << 15, **devargs) as stream:
+    with ps.DuplexStream(**devargs) as stream:
+        i = inp_fh.read(dtype=stream.dtype[1])
         for f in [1 << x for x in range(8, 16)]:
-            stream.frames = f
-            stream.txbuff.write(bytearray(stream.frames * stream.txbuff.elementsize))
-            stream.start()
-            stream.wait()
-            assert stream.rxbuff.read_available == stream.frames
-
-            stream.rxbuff.flush()
-            stream.txbuff.flush()
+            out = stream.playrec(i, f, blocking=True)
+            assert len(out) == f
+            inp_fh.seek(0)
 
 def test_pad(random_soundfile_input, devargs):
     inp_fh, preamble, dtype = random_soundfile_input
 
     # If we compensate for the delay we should have no frames truncated
-    mframes, frames, delay, ntrunc = assert_chunks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[:4]
+    ntrunc = assert_chunks_equal(inp_fh, preamble, dtype=dtype, compensate_delay=True)[3]
     assert ntrunc == 0
 
 # This tests the condition where frames = -1 and pad >= 0. It makes sure that
 # once the txbuff is found to be empty, it goes to 'autoframes' mode and never
 # tries to read the txbuff again
 def test_autoframes(devargs):
-    with ps.DuplexStream(buffersize=1<<17, **devargs) as stream:
-        stream.pad = int(stream.samplerate)
-        stream.frames = -1
-        stream.txbuff.write(bytearray(1024 * stream.txbuff.elementsize))
+
+    with ps.DuplexStream(**devargs) as stream:
+        txbuffer = ps.RingBuffer(stream.channels[1] * stream.samplesize[1], 1 << 10)
+        stream._set_ringbuffer('output', txbuffer)
+        rxbuffer = ps.RingBuffer(stream.channels[0] * stream.samplesize[0], 1 << 16)
+        stream._set_ringbuffer('input', rxbuffer)
+
+        stream._pad = int(stream.samplerate)
+        stream._frames = -1
+        txbuffer.advance_write_index(1024)
         stream.start()
-        while stream.txbuff.read_available:
-            time.sleep(0.01)
-        stream.txbuff.write(bytearray(1024 * stream.txbuff.elementsize))
+
+        # wait to enter autoframes mode
+        while not stream._cstream._autoframes:
+            time.sleep(0.005)
+        assert stream.active
+
+        # write some additional data; this data should be unread at the end of
+        # the stream
+        txbuffer.advance_write_index(1024)
         stream.wait()
-        assert stream.txbuff.read_available == 1024
-        assert stream.rxbuff.read_available == 1024 + int(stream.samplerate)
+        assert rxbuffer.read_available == 1024 + int(stream.samplerate)
+        assert txbuffer.read_available == 1024
 
 def test_frames_pad_offset(devargs):
-    with ps.DuplexStream(buffersize=1<<17, **devargs) as stream:
+    with ps.DuplexStream(**devargs) as stream:
+        txbuffer = ps.RingBuffer(stream.channels[1] * stream.samplesize[1], 1 << 17)
+        stream._set_ringbuffer('output', txbuffer)
+        rxbuffer = ps.RingBuffer(stream.channels[0] * stream.samplesize[0], 1 << 17)
+        stream._set_ringbuffer('input', rxbuffer)
+
         for f, p, o in [(1 << x + 8, 1 << 16 - x, 1 << x + 6) for x in range(7)]:
-            stream.frames = f
-            stream.pad = p
-            stream.offset = o
-            stream.txbuff.write(bytearray(stream.frames * stream.txbuff.elementsize))
+            stream._frames = f
+            stream._pad = p
+            stream._offset = o
+            txbuffer.advance_write_index(f)
+
             stream.start()
             stream.wait()
-            assert stream.rxbuff.read_available == stream.frames + stream.pad - stream.offset
+            assert rxbuffer.read_available == f + p - o
 
-            stream.rxbuff.flush()
-            stream.txbuff.flush()
+            rxbuffer.flush(); txbuffer.flush()
 
 def test_stream_replay(devargs):
-    with ps.DuplexStream(**devargs) as stream:
-        data = bytearray(len(stream.txbuff)*stream.txbuff.elementsize)
+    with ps.OutputStream(**devargs) as stream:
+        txbuffer = ps.RingBuffer(stream.channels * stream.samplesize, 8192)
+        stream._set_ringbuffer('output', txbuffer)
 
         # Start and let stream finish
-        stream.txbuff.write(data)
+        txbuffer.advance_write_index(len(txbuffer))
         stream.start()
         assert stream.wait(2), "Timed out!"
         assert stream.finished
-        stream.rxbuff.flush()
 
         # Start stream, wait, then abort it
-        stream.txbuff.write(data)
+        txbuffer.advance_write_index(len(txbuffer))
         stream.start()
         assert stream.active
-        stream.rxbuff.flush()
         stream.wait(0.001)
         stream.abort()
         assert stream.aborted
-        stream.rxbuff.flush()
 
         # Start stream then stop it
-        stream.txbuff.write(data)
+        txbuffer.advance_write_index(len(txbuffer))
         stream.start()
         assert stream.active
         stream.wait(0.001)
         stream.stop()
         assert stream.stopped
-        stream.rxbuff.flush()
 
 # For testing purposes
 class MyException(Exception):
     pass
 
 def test_deferred_exception_handling(devargs):
-    stream = ps.DuplexStream(buffersize=8192, **devargs)
-    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
+    stream = ps.OutputStream(**devargs)
+    txbuffer = ps.RingBuffer(stream.channels * stream.samplesize, 8192)
+    txbuffer.advance_write_index(len(txbuffer))
+    stream._set_ringbuffer('output', txbuffer)
     with pytest.raises(MyException) as excinfo:
         with stream:
             stream.start()
@@ -336,8 +351,10 @@ def test_threaded_write_deferred_exception_handling(devargs):
     def writer(stream, ringbuff):
         raise MyException(txmsg)
 
-    stream = ps.DuplexStream(buffersize=8192, writer=writer, **devargs)
-    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
+    stream = ps.OutputStream(**devargs)
+    stream._set_thread('output', writer, 8192)
+    stream._txbuffer.advance_write_index(len(stream._txbuffer))
+
     with pytest.raises(MyException) as excinfo:
         with stream:
             stream.start()
@@ -350,8 +367,10 @@ def test_threaded_read_deferred_exception_handling(devargs):
         raise MyException(rxmsg)
 
     # A reader exception should also stop the stream
-    stream = ps.DuplexStream(buffersize=8192, reader=reader, **devargs)
-    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
+    stream = ps.InputStream(**devargs)
+    stream._set_thread('input', reader, 8192)
+    stream._rxbuffer.advance_write_index(len(stream._rxbuffer))
+
     with pytest.raises(MyException) as excinfo:
         with stream:
             stream.start()
@@ -359,8 +378,12 @@ def test_threaded_read_deferred_exception_handling(devargs):
     assert str(excinfo.value) == rxmsg
 
 def test_frames_raises_underflow(devargs):
-    stream = ps.DuplexStream(buffersize=8192, frames=9000, **devargs)
-    stream.txbuff.write( bytearray(len(stream.txbuff)*stream.txbuff.elementsize) )
+    stream = ps.DuplexStream(**devargs)
+    txbuffer = ps.RingBuffer(stream.samplesize[1] * stream.channels[1], 8192)
+    stream._frames = 9000
+
+    stream._set_ringbuffer('output', txbuffer)
+    txbuffer.advance_write_index(len(txbuffer))
     with pytest.raises(ps.BufferEmpty) as excinfo:
         with stream:
             stream.start()

@@ -27,6 +27,10 @@ def init():
 
     return line,
 
+if '-h' in sys.argv or '--help' in sys.argv:
+    print("usage:", __usage__)
+    sys.exit(0)
+
 try:               dev = int(sys.argv[1])
 except IndexError: dev = None
 except ValueError: dev = sys.argv[1]
@@ -42,23 +46,17 @@ try:               subtype = sys.argv[4]
 except IndexError: subtype = None
 
 if inpf is not None:
-    cls = ps.SoundFileDuplexStream
-    kwargs = dict(format=format, subtype=subtype, inpf=inpf)
+    stream, null, inpf = ps._from_file('duplex', channels=1, device=dev, playbackfile=inpf,
+                                       format=format, subtype=subtype, latency='low')
 else:
-    cls = ps.InputStream; kwargs = {}
-
-try:
-    stream = cls(channels=1, device=dev, **kwargs)
-except:
-    traceback.print_exc()
-    print("usage: ", __usage__)
-    sys.exit(255)
+    stream = ps.InputStream(channels=1, device=dev)
 
 fig, ax = plt.subplots()
 line, = ax.plot([], [], 'b-', drawstyle='steps-mid')
 ax.grid()
 
 with stream:
-    ani = animation.FuncAnimation(fig, draw, stream.chunks(update, overlap=update//2),
+    ani = animation.FuncAnimation(fig, draw,
+                                  stream.chunks(update, update//2, playback=inpf),
                                   blit=True, interval=0, repeat=False, init_func=init)
     plt.show(block=True)

@@ -1,7 +1,6 @@
 #include <portaudio.h>
 #include <pa_ringbuffer.h>
 #include "py_pastream.h"
-#include <math.h>
 #ifdef PYPA_DEBUG
 #include <stdio.h>
 #endif
@@ -25,7 +24,7 @@ void reset_stream(Py_PaStream *stream) {
     stream->inputOverflows = 0;
     stream->outputUnderflows = 0;
     stream->outputOverflows = 0;
-    if ( stream->_autoframes )
+    if ( stream->_autoframes && stream->pad >= 0 )
         stream->frames = -1;
     stream->_autoframes = 0;
 };
@@ -41,7 +40,7 @@ int callback(
     unsigned long offset = 0;
     ring_buffer_size_t frames_left = frame_count;
     ring_buffer_size_t oframes_left = frame_count;
-    ring_buffer_size_t oframes = 0, iframes, tempframes;
+    ring_buffer_size_t oframes, iframes, tempframes;
     Py_PaStream * stream = (Py_PaStream *) user_data;
     long long frames = stream->frames;
     long pad = stream->pad;
@@ -68,11 +67,9 @@ int callback(
         }
 
         // Calcuate how many output frames are left to read (minus any padding)
-        if ( pad >= 0 && stream->frame_count + frames_left + pad >= frames ) {
-            if ( abs(frames - pad) > stream->frame_count )
-                oframes_left = abs(frames - pad) - stream->frame_count;
-            else
-                oframes_left = 0;
+        tempframes = frames - pad - stream->frame_count;
+        if ( pad >= 0 && frames_left >= tempframes ) {
+            oframes_left = tempframes > 0 ? tempframes : 0;
         }
     }
 
@@ -104,29 +101,33 @@ int callback(
                    0,
                    (frame_count - oframes)*stream->txbuffer->elementSizeBytes);
 
-        // We're done reading frames! Or the writer was too slow
-        if ( oframes < frames_left && pad >= 0) {
+        if ( oframes < frames_left) {
             if ( frames < 0 ) {
                 // Now that we've reached the end of buffer, calculate our
                 // final frame count including padding and enter autoframes
                 // mode
-                stream->_autoframes = 1;
-                frames = stream->frames = stream->frame_count + oframes + pad;
+                if ( pad >= 0 ) {
+                    stream->_autoframes = 1;
+                    frames = stream->frames = stream->frame_count + oframes + pad;
 
-                // exit point (2 of 2)
-                // We don't want to do an unncessary callback; end here
-                if ( stream->frame_count + frames_left >= frames ) {
-                    if ( stream->frame_count <= frames )
-                        frames_left = frames - stream->frame_count;
-                    else
-                        frames_left = 0;
-                    stream->last_callback = paComplete;
+                    // exit point (2 of 2)
+                    // We don't want to do an unncessary callback; end here
+                    if ( stream->frame_count + frames_left >= frames ) {
+                        if ( stream->frame_count <= frames )
+                            frames_left = frames - stream->frame_count;
+                        else
+                            frames_left = 0;
+                        stream->last_callback = paComplete;
+                    }
                 }
             }
-            else {
+            else if ( oframes < oframes_left ) {
                 strcpy(stream->errorMsg, "BufferEmpty");
                 stream->frame_count += oframes;
                 return stream->last_callback = paAbort;
+            }
+            else if ( pad < 0 ) {
+                stream->_autoframes = 1;
             }
         }
     }

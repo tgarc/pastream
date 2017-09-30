@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
@@ -19,8 +20,8 @@ def draw(data):
     global plotdata, rmisses, maxdelay, counter, lasttime
     xlim = list(ax.get_xlim())
 
-    delay[counter%len(delay)] = stream.rxbuff.read_available - len(data)
-    counter += 1
+    # delay[counter%len(delay)] = stream._rxbuffer.read_available - len(data)
+    # counter += 1
     # print(time.time() - lasttime, len(data), stream.rxbuff.read_available - len(data), max(delay), stream._rmisses - rmisses)
     lasttime = time.time()
     rmisses = stream._rmisses
@@ -31,6 +32,10 @@ def draw(data):
     line.set_ydata(plotdata)
 
     return line,
+
+if '-h' in sys.argv or '--help' in sys.argv:
+    print("usage:", __usage__)
+    sys.exit(0)
 
 try:               dev = int(sys.argv[1])
 except IndexError: dev = None
@@ -47,17 +52,10 @@ try:               subtype = sys.argv[4]
 except IndexError: subtype = None
 
 if inpf is not None:
-    cls = ps.SoundFileDuplexStream
-    kwargs = dict(format=format, subtype=subtype, inpf=inpf)
+    stream, null, inpf = ps._from_file('duplex', channels=1, device=dev, playbackfile=inpf,
+                                       format=format, subtype=subtype)
 else:
-    cls = ps.InputStream; kwargs = {}
-
-try:
-    stream = cls(channels=1, device=dev, **kwargs)
-except:
-    traceback.print_exc()
-    print("usage: ", __usage__)
-    sys.exit(255)
+    stream = ps.InputStream(channels=1, device=dev)
 
 lasttime = time.time()
 counter = maxdelay = rmisses = 0
@@ -71,5 +69,5 @@ with stream:
     fig.tight_layout()
     inc = 0.9
 
-    ani = animation.FuncAnimation(fig, draw, stream.chunks(), blit=True, interval=0, repeat=False)
+    ani = animation.FuncAnimation(fig, draw, stream.chunks(playback=inpf), blit=True, interval=0, repeat=False)
     plt.show(block=True)
