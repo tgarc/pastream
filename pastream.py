@@ -185,6 +185,7 @@ def _from_file(kind, recordfile=None, playbackfile=None, subtype=None, endian=No
         iformat = oformat = format
         isubtype = osubtype = subtype
         iendian = oendian = endian
+        ichannels = ochannels = channels
     raw_output = oformat and oformat.lower() == 'raw' or False
 
     # Open the playback file and set channels/samplerate and dtype based on
@@ -709,6 +710,7 @@ class Stream(_sd._StreamBase):
     def abort(self):
         with self.__statecond:
             self.__aborting = True
+        with self.__streamlock:
             super(Stream, self).abort()
         self.__stopiothreads()
         self._reraise_exceptions()
@@ -1306,25 +1308,45 @@ def fileplayrecorder(record, playback, frames=-1, pad=0, offset=0, loop=False, b
 
 # Used solely for the pastream app
 def _FileStreamFactory(record=None, playback=None, **kwargs):
+    # allow user to specify 'frames' in seconds
+    frames = kwargs.pop('frames', None)
+    pad = kwargs.pop('pad', None)
+    offset = kwargs.pop('offset', None)
+
     if record is not None and playback is not None:
-        Streamer = fileplayrecorder
-        kind = 'duplex'; ioargs = (record, playback)
+        kind = 'duplex'
+        stream = fileplayrecorder(record, playback, **kwargs)
+        playback = stream._txthread_args[1][0]
+        record = stream._rxthread_args[1][0]
     elif playback is not None:
-        Streamer = fileplayer
-        kind = 'output'; ioargs = (playback,)
         kwargs.pop('offset', None)
+        kind = 'output'
+        stream = fileplayer(playback, **kwargs)
+        playback = stream._txthread_args[1][0]
     elif record is not None:
-        Streamer = filerecorder
-        kind = 'input'; ioargs = (record,)
+        kind = 'input'
         kwargs.pop('pad', None)
+        kwargs.pop('loop', None)
+        stream = filerecorder(record, **kwargs)
+        record = stream._rxthread_args[1][0]
     else:
         raise ValueError("At least one of {playback, record} must be non-null.")
 
-    return Streamer(*ioargs, **kwargs), kind
+    # frames/pad/offset can all be specified in seconds (ie a multiple of samplerate)
+    # so set them here after the stream is opened
+    locs = locals()
+    for k in ('frames', 'pad', 'offset'):
+        v = locs[k]
+        if v is None: continue
+        if isinstance(v, str):
+            v = int(round(float(v) * stream.samplerate))
+        setattr(stream, '_' + k, v)
+
+    return stream, record, playback, kind
 
 
 def _get_parser(parser=None):
-    # import shlex
+    import shlex
     from argparse import Action, ArgumentParser, RawDescriptionHelpFormatter
 
     if parser is None:
@@ -1339,6 +1361,11 @@ Cross platform audio playback and capture.''')
         def __call__(*args, **kwargs):
             print(_sd.query_devices())
             _sys.exit(0)
+
+    def framestype(frames):
+        if frames.endswith('s'):
+            return sizetype(frames[:-1])
+        return frames
 
     def dvctype(dvc):
         try:               return int(dvc)
@@ -1358,14 +1385,14 @@ Cross platform audio playback and capture.''')
         return x
 
     def nullortype(x, type=None):
-        if not x or x == 'null':
+        if not x or x.lower() == 'null':
             return None
-        return type(x) if type is not None else x
+        return x if type is None else type(x)
 
-    # def csvtype(arg, type=None):
-    #     csvsplit = shlex.shlex(arg, posix=True)
-    #     csvsplit.whitespace = ','; csvsplit.whitespace_split = True
-    #     return list(map(type or str, csvsplit))
+    def csvtype(arg, type=None):
+        csvsplit = shlex.shlex(arg, posix=True)
+        csvsplit.whitespace = ','; csvsplit.whitespace_split = True
+        return tuple(map(type or str, csvsplit))
 
     parser.add_argument("input", type=nullortype,
         help='''\
@@ -1404,21 +1431,25 @@ suffix to specify size in kibi or mebi units. (Default %(default)d)''')
     propts.add_argument("--loop", action='store_true', default=False,
         help="Loop playback indefinitely.")
 
-    propts.add_argument("-n", "--frames", type=sizetype, default=-1, help='''\
-Limit playback/capture to this many frames. If FRAMES is negative (the
-default), then streaming will continue until there is no playback data
-remaining or, if no playback was given, recording will continue
+    propts.add_argument("-d", "--duration", type=framestype, default=-1,
+        help='''\
+Limit playback/capture to a certain duration in
+seconds. Alternatively, you may specify duration in samples by adding
+an 's' suffix (e.g., 1ks == 1000 samples). If FRAMES is negative
+(the default), then streaming will continue until there is no playback
+data remaining or, if no playback was given, recording will continue
 indefinitely.''')
 
-    propts.add_argument("--offset", type=possizetype, default=0, help='''\
+    propts.add_argument("-o", "--offset", type=framestype, default=0, help='''\
 Drop a number of frames from the start of a recording.''')
 
-    propts.add_argument("-p", "--pad", type=sizetype, nargs='?', default=0,
+    propts.add_argument("-p", "--pad", type=framestype, nargs='?', default=0,
         const=-1, help='''\
-Pad the input with frames of zeros. (Useful to avoid truncating full duplex
-recording). If PAD is negative (the default if no argument is given) then
-padding is chosen so that the total playback length matches --frames. If frames
-is also negative, zero padding will be added indefinitely.''')
+Pad the input with frames of zeros. (Useful to avoid truncating full
+duplex recording). If PAD is negative (the default if no argument is
+given) then padding is chosen so that the total playback length
+matches --duration. If frames is also negative, zero padding will be
+added indefinitely.''')
 
     devopts = parser.add_argument_group("audio device options")
 
@@ -1426,19 +1457,21 @@ is also negative, zero padding will be added indefinitely.''')
 PortAudio buffer size in units of frames. If zero or not specified, backend
 will decide an optimal size (recommended). ''')
 
-    devopts.add_argument("-c", "--channels", type=lambda x: nullortype(x, int),
-        nargs='+', help="Number of input/output channels.")
+    devopts.add_argument("-c", "--channels", metavar='channels[,channels]',
+        type=lambda x: csvtype(x, lambda y: nullortype(y, int)),
+        help="Number of input/output channels.")
 
-    devopts.add_argument("-d", "--device", type=lambda x: nullortype(x, dvctype),
-        nargs='+', help='''\
+    devopts.add_argument("-D", "--device", metavar='device[,device]',
+        type=lambda x: csvtype(x, lambda y: nullortype(y, dvctype)),
+        help='''\
 Audio device name expression(s) or index number(s). Defaults to the
 PortAudio default device(s).''')
 
-    choices = list(_sd._sampleformats.keys())
-    devopts.add_argument("-f", "--format", metavar="format", dest='dtype',
-        type=nullortype, nargs='+', choices=choices + [None], help='''\
+    devopts.add_argument("-f", "--format", metavar="format[,format]",
+        dest='dtype', type=lambda x: csvtype(x, nullortype),
+        help='''\
 Sample format(s) of audio device stream. Must be one of {%s}.'''
-% ', '.join(['null'] + choices))
+% ', '.join(['null'] + list(_sd._sampleformats.keys())))
 
     devopts.add_argument("-r", "--rate", dest='samplerate', type=possizetype,
         help='''\
@@ -1447,29 +1480,26 @@ Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
     fileopts = parser.add_argument_group('''\
 audio file formatting options. (options accept single values or pairs)''')
 
-    choices = list(_sf.available_formats().keys())
-    fileopts.add_argument("-t", "--file_type", metavar="file_type", nargs='+',
-        type=lambda x: nullortype(x, str.upper), choices=choices + [None],
+    fileopts.add_argument("-t", "--file_type", metavar="file_type[,file_type]",
+        type=lambda x: csvtype(x, lambda y: nullortype(y, str.upper)),
         help='''\
 Audio file type(s). (Required for RAW files). Typically this is determined
 from the file header or extension, but it can be manually specified here. Must
-be one of {%s}.''' % ', '.join(['null'] + choices))
+be one of {%s}.''' % ', '.join(['null'] + list(_sf.available_formats().keys())))
 
-    choices = list(_sf.available_subtypes().keys())
-    fileopts.add_argument("-e", "--encoding", metavar="encoding", nargs='+',
-        type=lambda x: nullortype(x, str.upper), choices=choices + [None],
+    fileopts.add_argument("-e", "--encoding", metavar="encoding[,encoding]",
+        type=lambda x: csvtype(x, lambda y: nullortype(y, str.upper)),
         help='''\
 Sample format encoding(s). Note for output file encodings: for file types that
 support PCM or FLOAT format, pastream will automatically choose the sample
 format that most closely matches the output device stream; for other file
 types, the subtype is required. Must be one of {%s}.'''
-% ', '.join(['null'] + choices))
+% ', '.join(['null'] + list(_sf.available_subtypes().keys())))
 
-    choices = ['file', 'big', 'little']
-    fileopts.add_argument("--endian", metavar="endian", nargs='+',
-        type=lambda x: nullortype(x, str.lower), choices=choices + [None],
+    fileopts.add_argument("--endian", metavar="endian[,endian]",
+        type=lambda x: csvtype(x, lambda y: nullortype(y, str.lower)),
         help='''\
-Sample endianness. Must be one of {%s}.''' % ', '.join(['null'] + choices))
+Sample endianness. Must be one of {%s}.''' % ', '.join(['null'] + ['file', 'big', 'little']))
 
     return parser
 
@@ -1488,17 +1518,21 @@ def _main(argv=None):
         return x[0] if x and len(x) == 1 else x and x[::-1]
 
     try:
-        stream, kind = _FileStreamFactory(args.output, args.input,
-                           buffersize=args.buffersize,
-                           loop=args.loop,
-                           samplerate=args.samplerate,
-                           blocksize=args.blocksize,
-                           endian=unpack(args.endian),
-                           subtype=unpack(args.encoding),
-                           format=unpack(args.file_type),
-                           device=unpack(args.device),
-                           channels=unpack(args.channels),
-                           dtype=unpack(args.dtype))
+        stream, record, playback, kind = _FileStreamFactory(
+            args.output, args.input,
+            buffersize=args.buffersize,
+            loop=args.loop,
+            offset=args.offset,
+            pad=args.pad,
+            frames=args.duration,
+            samplerate=args.samplerate,
+            blocksize=args.blocksize,
+            endian=unpack(args.endian),
+            subtype=unpack(args.encoding),
+            format=unpack(args.file_type),
+            device=unpack(args.device),
+            channels=unpack(args.channels),
+            dtype=unpack(args.dtype))
     except ValueError:
         traceback.print_exc()
         parser.print_usage()
@@ -1508,7 +1542,9 @@ def _main(argv=None):
         _sys.stdout = open(os.devnull, 'w')
 
     statline = "\r{:8.3f}s ({:d} xruns, {:6.2f}% load)\r"
-    print(["<->", "<--", "-->"][['duplex', 'output', 'input'].index(kind)], stream)
+    print("<-", 'null' if playback is None else playback)
+    print("->", 'null' if record is None else record)
+    print(["--", "->", "<-"][['duplex', 'output', 'input'].index(kind)], stream)
 
     with stream:
         try:

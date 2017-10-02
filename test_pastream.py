@@ -223,7 +223,7 @@ def test_stdin_stdout_loopback(random_soundfile_input, devargs):
 
     inp_fh.name.seek(0)
 
-    proc = subprocess.Popen(('pastream - - -t au -d=%s -f=int32' % devargs['device']).split(),
+    proc = subprocess.Popen(('pastream - - -t au -D %s -f=int32' % devargs['device']).split(),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     stdout = io.BytesIO(proc.communicate(inp_fh.name.read())[0])
 

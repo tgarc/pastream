@@ -121,13 +121,13 @@ int callback(
                     }
                 }
             }
+            else if ( pad < 0 ) { // Just pad out to stream->frames samples
+                stream->_autoframes = 1;
+            }
             else if ( oframes < oframes_left ) {
                 strcpy(stream->errorMsg, "BufferEmpty");
                 stream->frame_count += oframes;
                 return stream->last_callback = paAbort;
-            }
-            else if ( pad < 0 ) {
-                stream->_autoframes = 1;
             }
         }
     }
