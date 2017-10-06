@@ -177,10 +177,10 @@ def _from_file(kind, recordfile=None, playbackfile=None, subtype=None, endian=No
     samplerate = kwargs.pop('samplerate', None)
     channels = kwargs.pop('channels', None)
     if kind == 'duplex':
-        iformat, oformat = _sd._split(format)
-        isubtype, osubtype = _sd._split(subtype)
-        iendian, oendian = _sd._split(endian)
-        ichannels, ochannels = _sd._split(channels)
+        iformat , oformat = _sd._split(format)
+        isubtype , osubtype = _sd._split(subtype)
+        iendian , oendian = _sd._split(endian)
+        ichannels , ochannels = _sd._split(channels)
     else:
         iformat = oformat = format
         isubtype = osubtype = subtype
@@ -1312,6 +1312,10 @@ def _FileStreamFactory(record=None, playback=None, **kwargs):
     frames = kwargs.pop('frames', None)
     pad = kwargs.pop('pad', None)
     offset = kwargs.pop('offset', None)
+    try:
+        offset, ooffset = offset
+    except (TypeError, ValueError):
+        ooffset = offset
 
     if record is not None and playback is not None:
         kind = 'duplex'
@@ -1319,7 +1323,6 @@ def _FileStreamFactory(record=None, playback=None, **kwargs):
         playback = stream._txthread_args[1][0]
         record = stream._rxthread_args[1][0]
     elif playback is not None:
-        kwargs.pop('offset', None)
         kind = 'output'
         stream = fileplayer(playback, **kwargs)
         playback = stream._txthread_args[1][0]
@@ -1332,8 +1335,13 @@ def _FileStreamFactory(record=None, playback=None, **kwargs):
     else:
         raise ValueError("At least one of {playback, record} must be non-null.")
 
-    # frames/pad/offset can all be specified in seconds (ie a multiple of samplerate)
-    # so set them here after the stream is opened
+    if isinstance(ooffset, str):
+        ooffset = int(round(float(ooffset) * stream.samplerate))
+    if ooffset and playback is not None:
+        playback.seek(ooffset)
+
+    # frames/pad/offset can all be specified in seconds (ie a multiple of
+    # samplerate) so set them here after the stream is opened
     locs = locals()
     for k in ('frames', 'pad', 'offset'):
         v = locs[k]
@@ -1428,7 +1436,7 @@ maximum amount of buffering for the input/output file(s). Use higher values to
 increase robustness against irregular file i/o behavior. Add a 'K' or 'M'
 suffix to specify size in kibi or mebi units. (Default %(default)d)''')
 
-    propts.add_argument("--loop", action='store_true', default=False,
+    propts.add_argument("--loop", action='store_true',
         help="Loop playback indefinitely.")
 
     propts.add_argument("-d", "--duration", type=framestype, default=-1,
@@ -1440,7 +1448,10 @@ an 's' suffix (e.g., 1ks == 1000 samples). If FRAMES is negative
 data remaining or, if no playback was given, recording will continue
 indefinitely.''')
 
-    propts.add_argument("-o", "--offset", type=framestype, default=0, help='''\
+    # TODO: integrate offset behavior into loop mode
+    propts.add_argument("-o", "--offset", metavar='offset[,offset]',
+                        type=lambda x: list(map(framestype, x.split(',', 2))),
+                        help='''\
 Drop a number of frames from the start of a recording.''')
 
     propts.add_argument("-p", "--pad", type=framestype, nargs='?', default=0,
@@ -1522,7 +1533,7 @@ def _main(argv=None):
             args.output, args.input,
             buffersize=args.buffersize,
             loop=args.loop,
-            offset=args.offset,
+            offset=unpack(args.offset),
             pad=args.pad,
             frames=args.duration,
             samplerate=args.samplerate,

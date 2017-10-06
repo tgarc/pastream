@@ -135,6 +135,16 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
           % stats)
     return stats
 
+def randblock(size, elementsize, channels, preamb=0):
+    shift = 8*(4-elementsize)
+    minval = -(0x80000000>>shift)
+    maxval = 0x7FFFFFFF>>shift
+
+    block = np.random.randint(minval, maxval+1, (size + preamb, channels)) << shift
+    if preamb:
+        block[:preamb] = (PREAMBLE >> shift) << shift
+    return block
+
 def gen_random(nseconds, samplerate, channels, elementsize):
     """
     Generates a uniformly random integer signal ranging between the
