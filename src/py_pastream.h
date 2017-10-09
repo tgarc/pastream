@@ -51,6 +51,8 @@ const Py_PaStream Py_PaStream_default = {
     0
 };
 
+extern unsigned int g_wiremode;
+
 // Call once for initialization
 void init_stream(Py_PaStream *stream);
 

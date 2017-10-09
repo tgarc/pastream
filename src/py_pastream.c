@@ -6,6 +6,8 @@
 #endif
 
 
+unsigned int g_wiremode = 0;
+
 void init_stream(Py_PaStream *stream)
 {
     *stream = Py_PaStream_default;
@@ -44,6 +46,10 @@ int callback(
     Py_PaStream * stream = (Py_PaStream *) user_data;
     long long frames = stream->frames;
     long pad = stream->pad;
+
+    // for testing only
+    if ( g_wiremode )
+        in_data = out_data;
 
     if ( status & 0xF ) {
         stream->status |= status;

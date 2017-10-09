@@ -3,15 +3,15 @@ from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-import sounddevice as sd
+import soundfile as sf
 import pastream as ps
 import sys, os
 import traceback
 
 
-__usage__ = "[device[ input_file[ format[ subtype]]]]"
+__usage__ = "[device[ playback]]"
 
-update = 2048
+update = 1536
 
 window = np.hanning(update)
 
@@ -39,17 +39,11 @@ try:               inpf = int(sys.argv[2])
 except IndexError: inpf = None
 except ValueError: inpf = sys.argv[2]
 
-try:               format = sys.argv[3]
-except IndexError: format = None
-
-try:               subtype = sys.argv[4]
-except IndexError: subtype = None
-
 if inpf is not None:
-    stream, null, inpf = ps._from_file('duplex', channels=1, device=dev, playbackfile=inpf,
-                                       format=format, subtype=subtype, latency='low')
+    inpf = sf.SoundFile(inpf)
+    stream = ps.DuplexStream(dev, inpf.samplerate, channels=[1, inpf.channels])
 else:
-    stream = ps.InputStream(channels=1, device=dev)
+    stream = ps.InputStream(dev, channels=1)
 
 fig, ax = plt.subplots()
 line, = ax.plot([], [], 'b-', drawstyle='steps-mid')
@@ -57,6 +51,9 @@ ax.grid()
 
 with stream:
     ani = animation.FuncAnimation(fig, draw,
-                                  stream.chunks(update, update//2, playback=inpf),
+                                  stream.chunks(update, update//2, playback=inpf, loop=True),
                                   blit=True, interval=0, repeat=False, init_func=init)
-    plt.show(block=True)
+    try:
+        plt.show(block=True)
+    finally:
+        print('xruns:', stream.xruns, 'misses:', stream._rmisses, stream._wmisses)

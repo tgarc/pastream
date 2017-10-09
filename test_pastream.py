@@ -13,6 +13,9 @@ import sounddevice as sd
 import pastream as ps
 
 
+ps._lib.g_wiremode = 1
+
+
 # Set up the platform specific device
 system = platform.system()
 if system == 'Windows':
@@ -218,9 +221,9 @@ def test_soundfilestream_loopback(random_soundfile_input, devargs):
     devargs['dtype'] = dtype
 
     outf = tempfile.TemporaryFile()
-    with ps.fileplayrecorder(outf, inp_fh, format='wav', **devargs) as stream:
-        stream.start()
-        stream.wait()
+    with ps.DuplexStream(**devargs) as stream:
+        out_fh = stream._to_file(outf, format='wav')
+        stream.playrec(inp_fh, out=out_fh, blocking=True)
 
     outf.seek(0); inp_fh.seek(0)
     with sf.SoundFile(outf) as out_fh:
@@ -274,9 +277,9 @@ def test_autoframes(devargs):
 
     with ps.DuplexStream(**devargs) as stream:
         txbuffer = ps.RingBuffer(stream.channels[1] * stream.samplesize[1], 1 << 10)
-        stream._set_ringbuffer('output', txbuffer)
+        stream.set_source(txbuffer)
         rxbuffer = ps.RingBuffer(stream.channels[0] * stream.samplesize[0], 1 << 16)
-        stream._set_ringbuffer('input', rxbuffer)
+        stream.set_sink(rxbuffer)
 
         stream._pad = int(stream.samplerate)
         stream._frames = -1
@@ -298,9 +301,9 @@ def test_autoframes(devargs):
 def test_frames_pad_offset(devargs):
     with ps.DuplexStream(**devargs) as stream:
         txbuffer = ps.RingBuffer(stream.channels[1] * stream.samplesize[1], 1 << 17)
-        stream._set_ringbuffer('output', txbuffer)
+        stream.set_source(txbuffer)
         rxbuffer = ps.RingBuffer(stream.channels[0] * stream.samplesize[0], 1 << 17)
-        stream._set_ringbuffer('input', rxbuffer)
+        stream.set_sink(rxbuffer)
 
         for f, p, o in [(1 << x + 8, 1 << 16 - x, 1 << x + 6) for x in range(7)]:
             stream._frames = f
@@ -317,7 +320,7 @@ def test_frames_pad_offset(devargs):
 def test_stream_replay(devargs):
     with ps.OutputStream(**devargs) as stream:
         txbuffer = ps.RingBuffer(stream.channels * stream.samplesize, 8192)
-        stream._set_ringbuffer('output', txbuffer)
+        stream.set_source(txbuffer)
 
         # Start and let stream finish
         txbuffer.advance_write_index(len(txbuffer))
@@ -349,7 +352,7 @@ def test_deferred_exception_handling(devargs):
     stream = ps.OutputStream(**devargs)
     txbuffer = ps.RingBuffer(stream.channels * stream.samplesize, 8192)
     txbuffer.advance_write_index(len(txbuffer))
-    stream._set_ringbuffer('output', txbuffer)
+    stream.set_source(txbuffer)
     with pytest.raises(MyException) as excinfo:
         with stream:
             stream.start()
@@ -358,12 +361,13 @@ def test_deferred_exception_handling(devargs):
 
 def test_threaded_write_deferred_exception_handling(devargs):
     txmsg = "BOO-urns!"
-    def writer(stream, ringbuff):
+    def writer(stream, ringbuff, loop):
         raise MyException(txmsg)
 
     stream = ps.OutputStream(**devargs)
-    stream._set_thread('output', writer, 8192)
-    stream._txbuffer.advance_write_index(len(stream._txbuffer))
+    ringbuff = ps.RingBuffer(stream.channels * stream.samplesize, 8192)
+    stream.set_source(ringbuff, writer=writer)
+    ringbuff.advance_write_index(len(ringbuff))
 
     with pytest.raises(MyException) as excinfo:
         with stream:
@@ -378,8 +382,9 @@ def test_threaded_read_deferred_exception_handling(devargs):
 
     # A reader exception should also stop the stream
     stream = ps.InputStream(**devargs)
-    stream._set_thread('input', reader, 8192)
-    stream._rxbuffer.advance_write_index(len(stream._rxbuffer))
+    ringbuff = ps.RingBuffer(stream.channels * stream.samplesize, 8192)
+    stream.set_sink(ringbuff, reader=reader)
+    ringbuff.advance_write_index(len(ringbuff))
 
     with pytest.raises(MyException) as excinfo:
         with stream:
@@ -392,7 +397,7 @@ def test_frames_raises_underflow(devargs):
     txbuffer = ps.RingBuffer(stream.samplesize[1] * stream.channels[1], 8192)
     stream._frames = 9000
 
-    stream._set_ringbuffer('output', txbuffer)
+    stream.set_source(txbuffer)
     txbuffer.advance_write_index(len(txbuffer))
     with pytest.raises(ps.BufferEmpty) as excinfo:
         with stream:
