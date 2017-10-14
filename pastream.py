@@ -35,8 +35,7 @@ from pa_ringbuffer import _RingBufferBase
 _np = None # defer numpy import to speed up CLI
 
 
-__version__ = '0.0.8'
-__usage__ = "%(prog)s [options] input output"
+__version__ = '0.8.0'
 
 
 # Set a default size for the audio callback ring buffer
@@ -58,9 +57,6 @@ paOutputUnderflow = _lib.paOutputUnderflow
 # create an independent module level default
 default = type('default', (_sd.default.__class__,), {}).__call__()
 
-def reset():
-    _sd._terminate(); _sd._initialize()
-
 
 class BufferFull(Exception):
     pass
@@ -78,9 +74,9 @@ class RingBuffer(_RingBufferBase):
     @classmethod
     def _from_pointer(cls, pointer):
         class ProxyRingBuffer(cls):
-            def __init__(self, ptr):
+            def __init__(self, ptr, data=None):
                 self._ptr = ptr
-                self._data = None
+                self._data = data
         return ProxyRingBuffer(pointer)
 
 
@@ -247,7 +243,7 @@ class Stream(_sd._StreamBase):
         self._rxthread = self._txthread = None
         self._txthread_args = self._rxthread_args = None
 
-        # TODO?: add support for C finished_callback function pointer
+        # TODO: add support for C finished_callback function pointer
         self.__finished_callback = kwargs.pop('finished_callback', lambda x: None)
 
         def finished_callback():
@@ -305,8 +301,7 @@ class Stream(_sd._StreamBase):
         try:
             rwfunc(self, *args, **kwargs)
         except:
-            # Defer the exception and delegate responsibility to the owner
-            # thread
+            # Defer the exception and delegate to the owner thread
             self._set_exception()
             self.abort()
 
@@ -369,8 +364,12 @@ class Stream(_sd._StreamBase):
                              else size * channels, dtype=dtype)
 
     @classmethod
-    def _from_file(cls, file, **kwargs):
+    def from_file(cls, file, *args, **kwargs):
         """Create a stream using the charecteristics of a soundfile
+
+        Parameters
+        ----------
+        file : SoundFile or str or int or file-like object
 
         Other Parameters
         ----------------
@@ -379,7 +378,7 @@ class Stream(_sd._StreamBase):
 
         Returns
         -------
-        stream
+        Stream
             Open stream
 
         """
@@ -398,12 +397,16 @@ class Stream(_sd._StreamBase):
             pass
         kwargs['channels'] = file.channels
 
-        return cls(**kwargs)
+        return cls(*args, **kwargs)
 
     def wait(self, timeout=None):
-        """\
-        Block until stream state changes to finished/aborted/stopped or until
-        the optional timeout occurs.
+        """Block until stream state changes to finished/aborted/stopped or until the
+        optional timeout occurs.
+
+        Parameters
+        ----------
+        time : float, optional
+            Optional timeout in seconds.
 
         Returns
         -------
@@ -622,6 +625,36 @@ class Stream(_sd._StreamBase):
 class _OutputStreamMixin(object):
 
     def set_source(self, playback, loop=False, buffersize=None, writer=None, args=(), kwargs={}):
+        '''Set the playback source for the audio stream
+
+        Parameters
+        -----------
+        playback : RingBuffer or SoundFile or buffer
+            Playback source.
+        loop : bool
+            Whether to enable playback looping.
+        buffersize : int
+            RingBuffer size to use for buffering file audio data or if writer
+            is specified this will determine the size of the buffer passed to
+            it.
+        writer : function
+            Playback handler function. Must be of the form: function(stream,
+            ringbuffer[, file], *args, **kwargs). Use this if you want to
+            handle generating playback in some custom way. For example,
+            `writer` could be a function that reads audio data from a
+            socket. This function will be called from a separate thread
+            whenever the stream is started and is expected to close itself
+            whenever the stream becomes inactive. For an example see the
+            _soundfileplayer function in this module.
+        args, kwargs
+            Additional arguments to pass to `writer` function.
+
+        Returns
+        -------
+        RingBuffer or _LinearBuffer
+            Buffer from which audio device will read data.
+        
+        '''
         if self.isduplex:
             channels = self.channels[1]
             elementsize = channels * self.samplesize[1]
@@ -708,13 +741,15 @@ class _OutputStreamMixin(object):
 # Mix-in purely for adding recording methods
 class _InputStreamMixin(object):
 
-    def _to_file(self, file, **kwargs):
-        '''Open a SoundFile based on stream characteristics
+    def to_file(self, file, **kwargs):
+        '''Open a SoundFile for writing based on stream characteristics
 
         Parameters
         ----------
         file : str or int or file-like object
             File to open as SoundFile
+        **kwargs
+            Additional arguments to pass to SoundFile constructor
 
         Raises
         ------
@@ -763,6 +798,33 @@ class _InputStreamMixin(object):
                     subtype=subtype, format=fformat, **kwargs)
 
     def set_sink(self, out, buffersize=None, reader=None, args=(), kwargs={}):
+        '''Set the recording sink for the audio stream
+
+        Parameters
+        -----------
+        out : RingBuffer or SoundFile or buffer
+            Recording sink.
+        buffersize : int
+            RingBuffer size to use for (double) buffering audio data. Only
+            applicable when either `out` is a file or `reader` is specified.
+        reader : function
+            Recording handler function. Must be of the form: function(stream,
+            ringbuffer[, file], *args, **kwargs). Use this if you want to
+            handle capturing of audio data in some custom way. For example,
+            `reader` could be a function that writes audio data directly to a
+            socket.  This function will be called from a separate thread
+            whenever the stream is started and is expected to close itself
+            whenever the stream becomes inactive. For an example see the
+            _soundfilerecorder function in this module.
+        args, kwargs
+            Additional arguments to pass to `reader` function.
+
+        Returns
+        -------
+        RingBuffer or _LinearBuffer
+            Buffer to which audio device will write audio data.
+        
+        '''
         if self.isduplex:
             channels = self.channels[0]
             elementsize = channels * self.samplesize[0]
@@ -1072,63 +1134,35 @@ class InputStream(_InputStreamMixin, Stream):
     """Record only stream.
 
     Parameters
-    -----------
-    frames : int, optional
-        Number of frames to record. A negative value (the default) causes
-        recordings to continue indefinitely.
-    offset : int, optional
-        Number of frames to discard from beginning of recording.
-    reader : function, optional
-        Dedicated function for reading from the input ring buffer.
-
-    Other Parameters
     -----------------
-    **kwargs
-        Additional arguments to pass to base stream class.
+    *args, **kwargs
+        Arguments to pass to :class:`Stream`.
 
     """
 
     def __init__(self, *args, **kwargs):
         super(InputStream, self).__init__('input', *args, **kwargs)
 
-
 class OutputStream(_OutputStreamMixin, Stream):
     """Playback only stream.
 
-    writer : function, optional
-        Dedicated function for feeding the output ring buffer.
-
-    Other Parameters
+    Parameters
     -----------------
-    **kwargs
-        Additional arguments to pass to :class:`Stream`.
+    *args, **kwargs
+        Arguments to pass to :class:`Stream`.
 
     """
 
     def __init__(self, *args, **kwargs):
         super(OutputStream, self).__init__('output', *args, **kwargs)
 
-
 class DuplexStream(InputStream, OutputStream):
     """Full duplex audio streamer.
 
     Parameters
-    -----------
-    frames : int, optional
-        Number of frames to play/record. (Note: This does *not* include the
-        length of any additional padding).
-    blocksize : int, optional
-        Portaudio buffer size. If None or 0 (recommended), the Portaudio
-        backend will automatically determine an optimal size.
-
-    Other Parameters
-    ----------------
-    pad, writer
-        See :class:`OutputStream`.
-    offset, reader
-        See :class:`InputStream`.
-    device, channels, dtype, **kwargs
-        Additional parameters to pass to :class:`Stream`.
+    ----------
+    **kwargs
+        Arguments to pass to :class:`Stream`.
 
     See Also
     --------
@@ -1140,14 +1174,14 @@ class DuplexStream(InputStream, OutputStream):
         Stream.__init__(self, 'duplex', *args, **kwargs)
 
     @classmethod
-    def _from_file(cls, playback, **kwargs):
-        """Create a stream using the characteristics of a soundfile
+    def from_file(cls, playback, *args, **kwargs):
+        """Open a stream using the characteristics of a playback Soundfile
 
         Parameters
         ----------
         playback : SoundFile or str or int or file-like object
             Playback audio file from which to create stream.
-        
+
         Other Parameters
         ----------------
         **kwargs
@@ -1155,7 +1189,7 @@ class DuplexStream(InputStream, OutputStream):
 
         Returns
         -------
-        DuplexStream
+        Stream
             Open stream
 
         """
@@ -1163,19 +1197,44 @@ class DuplexStream(InputStream, OutputStream):
             playback = _sf.SoundFile(playback)
 
         try:
-            assert kwargs['samplerate'] is None or kwargs['samplerate'] == playback.samplerate
+            if not (kwargs['samplerate'] is None or kwargs['samplerate'] == playback.samplerate):
+                raise ValueError("samplerate passed does not match samplerate of playback file")
         except KeyError:
             pass
         kwargs['samplerate'] = playback.samplerate
 
-        ichannels, ochannels = _sd._split(kwargs.pop('channels', None))
-        assert ochannels is None or ochannels == playback.channels
-        kwargs['channels'] = (ichannels, playback.channels)
-
-        return cls(**kwargs)
+        channels = kwargs.pop('channels', None)
+        try:
+            if not (channels is None or channels[1] is None or channels[1] == playback.channels):
+                raise ValueError("output channels passed does not match channels in playback file")
+            kwargs['channels'] = (channels[0], playback.channels)
+        except TypeError:
+            kwargs['channels'] = (channels, playback.channels)
+        return cls(*args, **kwargs)
 
     def playrec(self, playback, frames=None, pad=0, offset=0, atleast_2d=False,
                 loop=False, blocking=False, out=None):
+        """Simultaneously record and play audio data
+
+        Parameters
+        -----------
+        frames : int, sometimes optional
+            Number of frames to play/record. This is required whenever
+            `playback` is a file and `out` is not given.
+        pad, offset, atleast_2d, loop, blocking, out
+            See description of :meth:`InputStream.record` and
+            :meth:`OutputStream.play`.
+
+        Returns
+        -------
+        ndarray or bytearray or type(out)
+            Recording destination.
+
+        See Also
+        --------
+        :meth:`OutputStream.play`, :meth:`InputStream.record`
+
+        """
         ichannels, ochannels = self.channels
         isamplesize, osamplesize = self.samplesize
 
@@ -1187,12 +1246,10 @@ class DuplexStream(InputStream, OutputStream):
         if frames is None and out is None and isinstance(playback, _sf.SoundFile):
             raise TypeError("at least one of {frames, out} is required when playback is a file")
         if out is None:
-            # do we just ignore negative `pad` in this case? it doesn't really
-            # make sense to use in this context
-            # frames = 0 case?
-            # frames < offset case?
             if frames is None:
                 frames = len(playback)
+            if frames < offset:
+                raise ValueError("frames must be >= offset")
             out = self._allocate_buffer(frames - offset + (pad if pad >= 0 else 0), 'input')
 
         if atleast_2d and (_np is None or not isinstance(out, _np.ndarray)):
@@ -1247,7 +1304,7 @@ def chunks(chunksize=None, overlap=0, frames=-1, pad=0, offset=0,
     """
     if playback is not None:
         if isinstance(playback, _sf.SoundFile):
-            stream = DuplexStream._from_file(playback, **kwargs)
+            stream = DuplexStream.from_file(playback, **kwargs)
         else:
             stream = DuplexStream(**kwargs)
     else:
@@ -1278,20 +1335,20 @@ def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False, 
 
     if record is not None and playback is not None:
         kind = 'duplex'
-        stream = DuplexStream._from_file(playback_fh, **kwargs)
-        record_fh = stream._to_file(record, subtype=isubtype, endian=iendian, format=iformat)
+        stream = DuplexStream.from_file(playback_fh, **kwargs)
+        record_fh = stream.to_file(record, subtype=isubtype, endian=iendian, format=iformat)
         stream.set_source(playback_fh, loop, buffersize)
         stream.set_sink(record_fh, buffersize)
     elif playback is not None:
         kind = 'output'
         record_fh = None
-        stream = OutputStream._from_file(playback_fh, **kwargs)
+        stream = OutputStream.from_file(playback_fh, **kwargs)
         stream.set_source(playback_fh, loop, buffersize)
     elif record is not None:
         kind = 'input'
         playback_fh = None
         stream = InputStream(**kwargs)
-        record_fh = stream._to_file(record, format=iformat, subtype=isubtype, endian=iendian)
+        record_fh = stream.to_file(record, format=iformat, subtype=isubtype, endian=iendian)
         stream.set_sink(record_fh, buffersize)
     else:
         raise TypeError("At least one of {playback, record} must be non-null.")
@@ -1302,8 +1359,9 @@ def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False, 
     for k in ('frames', 'pad', 'offset'):
         v = locs[k]
         if v is None: continue
-        if isinstance(v, str):
-            v = int(round(float(v) * stream.samplerate))
+        if isinstance(v, str): # parse the format H:M:S to number of seconds
+            seconds = sum(float(x)*60**i for i, x in enumerate(reversed(v.split(':'))))
+            v = int(round(seconds * stream.samplerate))
         setattr(stream, '_' + k, v)
 
     origclose = stream.close
@@ -1319,15 +1377,16 @@ def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False, 
 
 
 def _get_parser(parser=None):
-    import shlex
+    import shlex, re
     from argparse import Action, ArgumentParser, RawDescriptionHelpFormatter
+
+    # Hour:minute:second format
+    hms = re.compile(r'^\s*([0-9]+:)?([0-5]?[0-9]:)?[0-5]?[0-9](\.[0-9]+)?\s*$')
 
     if parser is None:
         parser = ArgumentParser(formatter_class=RawDescriptionHelpFormatter,
-                                add_help=False,
-                                fromfile_prefix_chars='@', usage=__usage__,
-                                description='''\
-Cross platform audio playback and capture.''')
+                                add_help=False, fromfile_prefix_chars='@',
+                                description=__doc__)
         parser.convert_arg_line_to_args = lambda arg_line: arg_line.split()
 
     class ListStreamsAction(Action):
@@ -1338,6 +1397,10 @@ Cross platform audio playback and capture.''')
     def framestype(frames):
         if frames.endswith('s'):
             return sizetype(frames[:-1])
+        elif frames == '-1':
+            return -1
+        elif not hms.match(frames):
+            raise ValueError("Couldn't parse argument: %s" % frames)
         return frames
 
     def dvctype(dvc):
@@ -1357,13 +1420,13 @@ Cross platform audio playback and capture.''')
         assert x > 0, "Must be a positive value."
         return x
 
-    def filetype(x):
-        if x.lower() in ('null', '', '{}'):
-            return None
-        return x
-        
+    def posframestype(x):
+        if x.startswith('-1'):
+            raise ValueError("Must be a non-negative value.")
+        return framestype(x)
+
     def nullortype(x, type=None):
-        if not x or x.lower() == 'null' or x == '-':
+        if x.lower() in ('null', '', '{}'):
             return None
         return x if type is None else type(x)
 
@@ -1372,15 +1435,15 @@ Cross platform audio playback and capture.''')
         csvsplit.whitespace = ','; csvsplit.whitespace_split = True
         return tuple(map(type or str, csvsplit))
 
-    parser.add_argument("input", type=filetype,
+    parser.add_argument("input", type=nullortype, metavar='input|NULL',
         help='''\
-Playback audio file. Use dash (-) to read from STDIN. Use 'null' or an empty
-string ("") for record only.''')
+Playback audio file. Use dash (-) to read from STDIN. Use one of {null, {}} or
+an empty string ('') to select record only.''')
 
-    parser.add_argument("output", type=filetype, nargs='?',
+    parser.add_argument("output", type=nullortype, metavar='output|NULL', nargs='?',
         help='''\
-Output file for recording. Use dash (-) to write to STDOUT. Use 'null' or an
-empty string ("") for playback only.''')
+Output file for recording. Use dash (-) to write to STDOUT. Use one of {null,
+{}} or an empty string ('') to select playback only.''')
 
     genopts = parser.add_argument_group("general options")
 
@@ -1396,45 +1459,47 @@ empty string ("") for playback only.''')
     genopts.add_argument("--version", action='version',
         version='%(prog)s ' + __version__, help="Print version and exit.")
 
-    propts = parser.add_argument_group('''\
-playback/record options. (size suffixes supported: k[ilo] K[ibi] m[ega] M[ebi])''')
+    propts = parser.add_argument_group("playback/record options",
+                                       description='''\
+Note that size type arguments are accepted in the form hours:minutes:seconds by
+default or in samples directly by appending an 's' suffix lead by an optional
+size suffix: k[ilo] K[ibi] m[ega] M[ebi]. (e.g. 1Ks == 1024 samples).''')
 
     propts.add_argument("--buffersize", type=possizetype,
         default=_PA_BUFFERSIZE, help='''\
 File buffering size in units of frames. Must be a power of 2. Determines the
 maximum amount of buffering for the input/output file(s). Use higher values to
-increase robustness against irregular file i/o behavior. Add a 'K' or 'M'
-suffix to specify size in kibi or mebi units. (Default %(default)d)''')
+increase robustness against irregular file i/o behavior. (Default
+%(default)d)''')
 
     propts.add_argument("--loop", action='store_true',
         help="Loop playback indefinitely.")
 
     propts.add_argument("-d", "--duration", type=framestype, default=-1,
         help='''\
-Limit playback/capture to a certain duration in
-seconds. Alternatively, you may specify duration in samples by adding
-an 's' suffix (e.g., 1ks == 1000 samples). If FRAMES is negative
-(the default), then streaming will continue until there is no playback
-data remaining or, if no playback was given, recording will continue
+Limit playback/capture to a certain duration. If duration is negative (the
+default), then streaming will continue until there is no playback data
+remaining or, if no playback was given, recording will continue
 indefinitely.''')
 
-    # TODO: integrate offset behavior into loop mode
-    propts.add_argument("-o", "--offset", type=framestype, help='''\
+    propts.add_argument("-o", "--offset", type=posframestype, help='''\
 Drop a number of frames from the start of a recording.''')
 
     propts.add_argument("-p", "--pad", type=framestype, nargs='?', default=0,
         const=-1, help='''\
-Pad the input with frames of zeros. (Useful to avoid truncating full
-duplex recording). If PAD is negative (the default if no argument is
-given) then padding is chosen so that the total playback length
-matches --duration. If frames is also negative, zero padding will be
-added indefinitely.''')
+Pad the input with frames of zeros. (Useful to avoid truncating full duplex
+recordings). If pad is negative (the default if no argument is given) then
+padding is chosen so that the total playback length matches --duration. If
+duration is also negative, zero padding will be added indefinitely.''')
 
-    devopts = parser.add_argument_group("audio device options")
+    devopts = parser.add_argument_group("audio device options",
+                                        description='''\
+Options accept single values or pairs. One of {null, {}) or an empty string
+('') may be used as a placeholder for the default value.''')
 
     devopts.add_argument("-b", "--blocksize", type=possizetype, help='''\
-PortAudio buffer size in units of frames. If zero or not specified, backend
-will decide an optimal size (recommended). ''')
+PortAudio buffer size in units of frames. If not specified, backend will decide
+an optimal size (recommended). ''')
 
     devopts.add_argument("-c", "--channels", metavar='channels[,channels]',
         type=lambda x: csvtype(x, lambda y: nullortype(y, int)),
@@ -1450,21 +1515,23 @@ PortAudio default device(s).''')
         dest='dtype', type=lambda x: csvtype(x, nullortype),
         help='''\
 Sample format(s) of audio device stream. Must be one of {%s}.'''
-% ', '.join(['null'] + list(_sd._sampleformats.keys())))
+% ', '.join(['-'] + list(_sd._sampleformats.keys())))
 
     devopts.add_argument("-r", "--rate", dest='samplerate', type=possizetype,
         help='''\
 Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
 
-    fileopts = parser.add_argument_group('''\
-audio file formatting options. (options accept single values or pairs)''')
+    fileopts = parser.add_argument_group("audio file formatting options",
+                                         description='''\
+Options accept single values or pairs. One of {null, {}} or an empty string
+('') may be used as a placeholder for the default value.''')
 
     fileopts.add_argument("-t", "--file_type", metavar="file_type[,file_type]",
         type=lambda x: csvtype(x, lambda y: nullortype(y, str.upper)),
         help='''\
 Audio file type(s). (Required for RAW files). Typically this is determined
 from the file header or extension, but it can be manually specified here. Must
-be one of {%s}.''' % ', '.join(['null'] + list(_sf.available_formats().keys())))
+be one of {%s}.''' % ', '.join(['-'] + list(_sf.available_formats().keys())))
 
     fileopts.add_argument("-e", "--encoding", metavar="encoding[,encoding]",
         type=lambda x: csvtype(x, lambda y: nullortype(y, str.upper)),
@@ -1473,12 +1540,12 @@ Sample format encoding(s). Note for output file encodings: for file types that
 support PCM or FLOAT format, pastream will automatically choose the sample
 format that most closely matches the output device stream; for other file
 types, the subtype is required. Must be one of {%s}.'''
-% ', '.join(['null'] + list(_sf.available_subtypes().keys())))
+% ', '.join(['-'] + list(_sf.available_subtypes().keys())))
 
     fileopts.add_argument("--endian", metavar="endian[,endian]",
         type=lambda x: csvtype(x, lambda y: nullortype(y, str.lower)),
         help='''\
-Sample endianness. Must be one of {%s}.''' % ', '.join(['null'] + ['file', 'big', 'little']))
+Sample endianness. Must be one of {%s}.''' % ', '.join(['-'] + ['file', 'big', 'little']))
 
     return parser
 
@@ -1520,7 +1587,7 @@ def _main(argv=None):
     if args.output == '-' or args.quiet:
         _sys.stdout = open(os.devnull, 'w')
 
-    statline = "\r{:8.3f}s ({:d} xruns, {:6.2f}% load)\r"
+    statline = "\r  {:02.0f}:{:02.0f}:{:02.2f}s ({:d} xruns, {:6.2f}% load)\r"
     print("<-", 'null' if playback is None else playback)
     print("->", 'null' if record is None else record)
     print(["--", "->", "<-"][['duplex', 'output', 'input'].index(kind)], stream)
@@ -1530,23 +1597,24 @@ def _main(argv=None):
             stream.start()
             t1 = _time.time()
             while stream.active:
-                line = statline.format(_time.time() - t1, stream.xruns,
+                dt = _time.time() - t1
+                line = statline.format(dt // 3600, dt % 3600 // 60, dt % 60,
+                                       stream.xruns,
                                        100 * stream.cpu_load)
                 _sys.stdout.write(line); _sys.stdout.flush()
-                _time.sleep(0.15)
+                _time.sleep(0.12)
         except KeyboardInterrupt:
             stream.stop()
         finally:
             print()
 
     print("Callback info:")
-    print("\tFrames processed: %d ( %7.3fs )"
+    print("\tFrames processed: %d ( %.3fs )"
           % (stream.frame_count, stream.frame_count / float(stream.samplerate)))
     print('''\
 \txruns (under/over): input {0.inputUnderflows}/{0.inputOverflows}
 \txruns (under/over): output {0.outputUnderflows}/{0.outputOverflows}'''
           .format(stream._cstream))
-    print("\tWrite/read misses: %d/%d" % (stream._wmisses, stream._rmisses))
 
     return 0
 

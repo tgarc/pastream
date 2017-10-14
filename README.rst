@@ -38,6 +38,10 @@ Input Stream iterators
 
     See ``pastream.chunks`` and ``pastream.InputStream.chunks`` method.
 
+Built-in support for working with SoundFiles and numpy ndarrays
+    Seamless support for playback/recording of numpy ndarrays, generic buffer
+    types, and SoundFiles.
+
 Reader/Writer Threads
     pastream simplifies the process of implementing stream reader and writer
     threads to manipulate and/or generate data in the background while leaving
@@ -109,22 +113,26 @@ output to the html format)::
 
 Examples
 ----------------
-Record 1000 frames to file, then play it back:
+Record one second of audio to memory, then play it back:
 
 .. code-block:: python
 
-   import pastream as ps
+   import pastream as ps, soundfile as sf
 
    # Use *with* statements to auto-close the stream
-   with ps.SoundFileInputStream('recording.wav') as stream:
-       stream.frames = 1000
-       stream.start()
-       stream.wait() # Block until recording is done
+   with ps.DuplexStream() as stream:
+       out = stream.record(int(stream.samplerate), blocking=True)
+       stream.play(out, blocking=True)
 
-   with ps.SoundFileOutputStream('recording.wav') as stream:
-       stream.frames = 1000
-       stream.start()
-       stream.wait()
+Playback 10 seconds of a file, adding zero padding if the file is shorter, and
+record the result to memory:
+
+.. code-block:: python
+
+   import pastream as ps, soundfile as sf
+
+   with sf.SoundFile('out.wav') as infile, ps.DuplexStream.from_file(infile) as stream:
+       out = stream.playrec(infile, frames=10 * int(stream.samplerate), pad=-1, blocking=True)
 
 Grab (real) frequency transformed live audio stream with 50% overlap:
 
@@ -159,14 +167,14 @@ Simultaneous play and record from the default audio device::
 
     $ pastream input.wav output.wav
 
-Pipe input from sox using the AU format::
+Pipe input from sox using the AU format and record the playback::
 
     $ sox -n -t au - synth sine 440 | pastream - output.wav
 
 Play a RAW file::
 
-    $ pastream -c1 -r48k -e=pcm_16 -o output.raw
+    $ pastream -c1 -r48k -e=pcm_16 output.raw
 
-Record 10 seconds of audio at 48kHz::
+Record 10 minutes of audio at 48kHz::
 
-    $ pastream null output.wav -r48k -n=480k
+    $ pastream null output.wav -r48k -d10:00

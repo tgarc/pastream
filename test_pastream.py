@@ -138,15 +138,19 @@ def assert_chunks_equal(inp_fh, preamble, compensate_delay=False, chunksize=None
           % stats)
     return stats
 
-def randblock(size, elementsize, channels, preamb=0):
-    shift = 8*(4-elementsize)
-    minval = -(0x80000000>>shift)
-    maxval = 0x7FFFFFFF>>shift
+def randstream(stream, n):
+    # Limit samplesize to 3 since even '32-bit' devices are actually only 24-bits
+    shift = 8 * (4 - min(stream.samplesize, 3))
+    minval = -(PREAMBLE + 1 >> shift)
+    maxval =   PREAMBLE     >> shift
 
-    block = np.random.randint(minval, maxval+1, (size + preamb, channels)) << shift
-    if preamb:
-        block[:preamb] = (PREAMBLE >> shift) << shift
-    return block
+    preamble = np.zeros((n, stream.channels), dtype=stream.dtype)
+    preamble[:] = (PREAMBLE >> shift) << shift
+
+    n = (yield preamble)
+    while True:
+        block = np.random.randint(minval, maxval+1, (n, stream.channels)) << shift
+        n = (yield block.astype(np.int32))
 
 def gen_random(nseconds, samplerate, channels, elementsize):
     """
@@ -222,7 +226,7 @@ def test_soundfilestream_loopback(random_soundfile_input, devargs):
 
     outf = tempfile.TemporaryFile()
     with ps.DuplexStream(**devargs) as stream:
-        out_fh = stream._to_file(outf, format='wav')
+        out_fh = stream.to_file(outf, format='wav')
         stream.playrec(inp_fh, out=out_fh, blocking=True)
 
     outf.seek(0); inp_fh.seek(0)

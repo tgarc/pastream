@@ -1,12 +1,17 @@
 notifications:
   email: false
 
+# Some python environment update for linux screwed up my build
+# see: https://github.com/travis-ci/travis-ci/issues/8378
+group: 
+  deprecated-2017Q3
+
 env:
   global:
     - TWINE_USERNAME=tgarc
     - secure: "jK9hKnRawtZVNmx+mOZ0QYPYtpuC/34TDFwR2PQrqH98qGQkOkvHKAv5OAGcOqjpOVJ7dyiHW+SUMqN7ruyinmFvQIniW59xtg/7t4+SSZO4XnhyYCOjlbcuzNj0N6dueiFuJVnESGFlVdqdsTsldxD0TN4Pm1VTpqbC2J0OuAAmSaUn92Ybt9boxhOw/KupnDio0AUZEHnad3ctgw1Mt3faJkrHbdgRo1VNUjtDwQufMdSUwfyQ5FyQp4WOHnDldgGZIzjVYA4/0D6pXJ/XQzniiuT7lWR/s1vYJdgniZm+4mEV6/V99y6/ZKH/93iWIRWtR4D0XzIpJvALR8v6/A8frx7qaLo4Q04dwhGTzO6HtsOpOun+V0e2RW3UAHG51MjFF2bOy2ySiS9dlIVcWCMZsWJoa/D1NgSWiQdJmYPs2Q5RjwEoVpYVW9y7d0t0cep3811+WsHU92Mn/gryxaYYArxJI46n68dQoGqCub/11jAViZucbJVkThdGsLoRy/5CnB/2HyXPs6rBvJcza87bi4Nh3SyW4ZmHuk+i/6iKU46393AHQ4S0RXx0d3aLf94Cd9qafA++5nXeDMYnuDbPMB1cRLi3ur03afdJUUyuD8I1yAUKso4R6UhWKkNdmKIrwGZeYmHcqKnxZ3G/PRjRK4n/tnFqXma4MXzJaks="
-    - CIBW_BEFORE_BUILD='{pip} install cffi pa_ringbuffer'
-    - CIBW_BEFORE_BUILD_LINUX='yum install -y libffi-devel && {pip} install cffi pa_ringbuffer'
+    - CIBW_BEFORE_BUILD='{pip} install cffi pa_ringbuffer!=0.1.1'
+    - CIBW_BEFORE_BUILD_LINUX='yum install -y libffi-devel && {pip} install cffi pa_ringbuffer!=0.1.1'
     # - CIBW_TEST_COMMAND='pytest {project}/test_pastream.py'
 
 matrix:
@@ -19,7 +24,9 @@ matrix:
       env: PKG_CONFIG_PATH="$PKG_CONFIG_PATH":/usr/local/opt/libffi/lib/pkgconfig
       language: generic
       before_install:
-        - brew install libffi
+        # This is also a recent travis-ci update screwup: 
+        # https://github.com/PowerShell/PowerShell/issues/5062
+        - HOMEBREW_NO_AUTO_UPDATE=1 brew install libffi
         - virtualenv env -p python
         - source env/bin/activate
 

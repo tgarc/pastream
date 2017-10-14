@@ -7,7 +7,15 @@
 
 .. include:: ../README.rst
 
-.. default-role::
+
+Command Line Reference
+==========================
+
+.. argparse::
+   :module: pastream
+   :func: _get_parser
+   :prog: pastream
+   :nodescription:
 
 
 API Reference
@@ -15,9 +23,9 @@ API Reference
 
 .. automodule:: pastream
    :members:
-   :exclude-members: InputStream, _StreamBase
+   :exclude-members: InputStream
 
-.. autoclass:: _StreamBase
+.. autoclass:: Stream
    :members:
    :undoc-members:
    :inherited-members:
@@ -28,11 +36,13 @@ API Reference
 .. autoclass:: RingBuffer
    :inherited-members:
 
+
+.. default-role::
+
 .. include:: ../CHANGELOG.rst
 
-.. only:: html
 
-   Index
-   -----
+Index
+=====
 
-   :ref:`genindex`
+:ref:`genindex`

@@ -47,7 +47,7 @@ except ValueError: inpf = sys.argv[2]
 
 if inpf is not None:
     inpf = sf.SoundFile(inpf)
-    stream = ps.DuplexStream(dev, inpf.samplerate, channels=[1, inpf.channels])
+    stream = ps.DuplexStream.from_file(inpf, dev, channels=1)
 else:
     stream = ps.InputStream(dev, channels=1)
 
