@@ -9,7 +9,7 @@
 
 
 GIL-less Portaudio Streams for Python
-=================================================
+=====================================
 `pastream` builds on top of `portaudio <http://www.portaudio.com/>`__ and the
 excellent `sounddevice <http://github.com/spatialaudio/python-sounddevice>`__
 python bindings to provide some more advanced functionality right out of the
@@ -19,7 +19,7 @@ and recording audio files.
 
 
 Features
---------
+========
 GIL-less Audio Callbacks
     Having the portaudio callback implemented in C means audio interrupts can
     be serviced quickly and reliably without ever needing to acquire the Python
@@ -49,7 +49,7 @@ Reader/Writer Threads
 
 
 Dependencies
-------------
+============
 `cffi <https://cffi.readthedocs.io/en/latest/>`__
 
 `sounddevice <http://github.com/spatialaudio/python-sounddevice>`__ (depends on `PortAudio <http://www.portaudio.com>`__)
@@ -60,7 +60,7 @@ Dependencies
 
 
 Installation
-------------
+============
 For linux platforms a recent version of the ``PortAudio`` and ``libsndfile`` C
 libraries are required. (For Windows and OSX, the sounddevice and soundfile
 packages include prebuilt versions for you). You can either install the latest
@@ -74,7 +74,7 @@ pastream is now available on PyPI. Installation is as easy as::
 
 
 Building From Source
---------------------
+=====================
 To compile from source under unix platforms, ``libffi`` is required. (For
 Windows, this is already included with ``cffi``). ``libffi`` is available
 through most package managers (e.g., ``yum install libffi-devel``, ``apt-get
@@ -96,7 +96,7 @@ Then do a pip install from your working copy::
 
 
 Building Documentation
-----------------------
+======================
 Documentation for pastream can be easily generated in a wide variety of formats
 using Sphinx. Just follow the steps below.
 
@@ -112,12 +112,12 @@ output to the html format)::
 
 
 Examples
-----------------
+========
 Record one second of audio to memory, then play it back:
 
 .. code-block:: python
 
-   import pastream as ps, soundfile as sf
+   import pastream as ps
 
    # Use *with* statements to auto-close the stream
    with ps.DuplexStream() as stream:
@@ -131,7 +131,7 @@ record the result to memory:
 
    import pastream as ps, soundfile as sf
 
-   with sf.SoundFile('out.wav') as infile, ps.DuplexStream.from_file(infile) as stream:
+   with sf.SoundFile('my-file.wav') as infile, ps.DuplexStream.from_file(infile) as stream:
        out = stream.playrec(infile, frames=10 * int(stream.samplerate), pad=-1, blocking=True)
 
 Grab (real) frequency transformed live audio stream with 50% overlap:
@@ -149,9 +149,9 @@ See also the included examples under `/examples`.
 
 
 Command Line Application
------------------------------------
+========================
 Once installed, the pastream application should be callable from your command
-line. If you're familiar with `sox <http://sox.sourceforge.net/>`__ you'll
+line. If you're familiar with `SoX <http://sox.sourceforge.net/>`__ you'll
 notice that some of the command line syntax is quite similar. Here are a few
 examples to help get you started.
 

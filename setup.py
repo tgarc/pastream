@@ -6,13 +6,14 @@ __version__ = 'unknown'
 
 # "import" __version__
 dirname = os.path.dirname(__file__)
-for line in open(os.path.join(dirname, 'pastream.py')):
+for line in open(os.path.join(dirname, 'src', 'pastream.py')):
     if line.startswith('__version__'):
         exec(line)
         break
 
 setup(name='pastream',
       version=__version__,
+      package_dir={'': 'src'},
       py_modules=['pastream'],
       author='Thomas J. Garcia',
       url='http://github.com/tgarc/pastream',
@@ -33,7 +34,7 @@ setup(name='pastream',
       tests_require=['pytest>=3.0', 'numpy'],
       extras_require={
           'examples': ['numpy', 'matplotlib'],
-          'docs': ['sphinx', 'sphinx_rtd_theme']
+          'docs': ['sphinx', 'sphinx_rtd_theme', 'rst2pdf']
       },
       classifiers=[
           'License :: OSI Approved :: MIT License',

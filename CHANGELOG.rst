@@ -1,6 +1,25 @@
 Release Notes
 =============
 
+0.1.0:
+  * (c70bda) Dropped SoundFileStream classes. This functionality is now
+    integrated into the regular stream classes.
+
+  * (c70bda) Added play/record/playrec methods
+
+  * (dbe076) Added seamless support for SoundFiles
+
+  * (dbe076) Added built-in support for looping both files and buffers
+
+  * (a65cc5) Added set_source/set_sink methods as alternatives to play/record
+    and as a mechanism to set reader/writer threads.
+
+  * (a65cc5) Added to_file/from_file convenience methods
+
+  * (7676eb+58472e) offset/pad/duration are all now specified in
+    hours:minutes:seconds by default. samples can still be specified by
+    appending an 's' suffix (just like with SoX).
+
 0.0.8:
   * BUG: fixed possible bad behavior when pad >= 0 frames < 0 (06881)
 

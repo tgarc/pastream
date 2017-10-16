@@ -5,44 +5,17 @@
 
 .. default-role:: py:obj
 
+.. toctree::
+   :hidden:
+   :maxdepth: 2
+
+   README
+   CHANGELOG
+   cli
+   api
+
+
 .. include:: ../README.rst
-
-
-Command Line Reference
-==========================
-
-.. argparse::
-   :module: pastream
-   :func: _get_parser
-   :prog: pastream
-   :nodescription:
-
-
-API Reference
-=============
-
-.. automodule:: pastream
-   :members:
-   :exclude-members: InputStream
-
-.. autoclass:: Stream
-   :members:
-   :undoc-members:
-   :inherited-members:
-
-.. autoclass:: InputStream
-   :members: chunks
-
-.. autoclass:: RingBuffer
-   :inherited-members:
-
-
-.. default-role::
 
 .. include:: ../CHANGELOG.rst
 
-
-Index
-=====
-
-:ref:`genindex`

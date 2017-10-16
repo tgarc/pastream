@@ -37,6 +37,7 @@ extensions = ['sphinx.ext.autodoc',
               'sphinx.ext.napoleon',
               'sphinx.ext.intersphinx',
               'sphinxarg.ext',
+              'rst2pdf.pdfbuilder'
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -150,9 +151,8 @@ latex_elements = {
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
     (master_doc, 'pastream.tex', 'pastream Documentation',
-     'Author', 'manual'),
+     author, 'manual'),
 ]
-
 
 # -- Options for manual page output ---------------------------------------
 
@@ -204,4 +204,4 @@ intersphinx_mapping = {
     'numpy': ('http://docs.scipy.org/doc/numpy/', None)
 }
 
-navtree_shift = False
+# pdf_documents = [(master_doc, 'pastream', 'pastream Documentation', author),]

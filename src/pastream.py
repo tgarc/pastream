@@ -373,8 +373,8 @@ class Stream(_sd._StreamBase):
 
         Other Parameters
         ----------------
-        **kwargs
-            Parameters to Stream constructor
+        *args, **kwargs
+            Arguments to pass to Stream constructor
 
         Returns
         -------
@@ -638,10 +638,10 @@ class _OutputStreamMixin(object):
             is specified this will determine the size of the buffer passed to
             it.
         writer : function
-            Playback handler function. Must be of the form: function(stream,
-            ringbuffer[, file], *args, **kwargs). Use this if you want to
-            handle generating playback in some custom way. For example,
-            `writer` could be a function that reads audio data from a
+            Playback handler function. Must be of the form: ``function(stream,
+            ringbuffer[, playback], *args, loop=<bool>, **kwargs)``. Use this
+            if you want to handle generating playback in some custom way. For
+            example, `writer` could be a function that reads audio data from a
             socket. This function will be called from a separate thread
             whenever the stream is started and is expected to close itself
             whenever the stream becomes inactive. For an example see the
@@ -653,7 +653,7 @@ class _OutputStreamMixin(object):
         -------
         RingBuffer or _LinearBuffer
             Buffer from which audio device will read data.
-        
+
         '''
         if self.isduplex:
             channels = self.channels[1]
@@ -665,7 +665,6 @@ class _OutputStreamMixin(object):
         if buffersize is None:
             buffersize = _PA_BUFFERSIZE
 
-        args = (loop,) + args
         if isinstance(playback, _sf.SoundFile):
             if writer is None: writer = _soundfileplayer
             if playback.samplerate != self.samplerate or playback.channels != channels:
@@ -681,14 +680,8 @@ class _OutputStreamMixin(object):
         elif isinstance(playback, RingBuffer):
             buffer = playback
         else:
-            try:
-                data = _ffi.from_buffer(playback)
-            except TypeError:
-                data = playback
-            frames = len(data) // elementsize
-
-            buffer = _LinearBuffer(elementsize, data)
-            buffer.advance_write_index(frames)
+            buffer = _LinearBuffer(elementsize, playback)
+            buffer.advance_write_index(len(buffer))
 
         self._cstream.txbuffer = _ffi.cast('PaUtilRingBuffer*', buffer._ptr)
         self._txbuffer = buffer
@@ -696,6 +689,7 @@ class _OutputStreamMixin(object):
         if writer is not None:
             # Assume the writer will take care of looping
             self._cstream.loop = 0
+            kwargs['loop'] = loop
             self._txthread_args = writer, (buffer,) + args, kwargs
         else:
             self._cstream.loop = loop
@@ -808,8 +802,8 @@ class _InputStreamMixin(object):
             RingBuffer size to use for (double) buffering audio data. Only
             applicable when either `out` is a file or `reader` is specified.
         reader : function
-            Recording handler function. Must be of the form: function(stream,
-            ringbuffer[, file], *args, **kwargs). Use this if you want to
+            Recording handler function. Must be of the form: ``function(stream,
+            ringbuffer[, out], *args, **kwargs)``. Use this if you want to
             handle capturing of audio data in some custom way. For example,
             `reader` could be a function that writes audio data directly to a
             socket.  This function will be called from a separate thread
@@ -823,7 +817,7 @@ class _InputStreamMixin(object):
         -------
         RingBuffer or _LinearBuffer
             Buffer to which audio device will write audio data.
-        
+
         '''
         if self.isduplex:
             channels = self.channels[0]
@@ -1134,7 +1128,7 @@ class InputStream(_InputStreamMixin, Stream):
     """Record only stream.
 
     Parameters
-    -----------------
+    ----------
     *args, **kwargs
         Arguments to pass to :class:`Stream`.
 
@@ -1147,7 +1141,7 @@ class OutputStream(_OutputStreamMixin, Stream):
     """Playback only stream.
 
     Parameters
-    -----------------
+    ----------
     *args, **kwargs
         Arguments to pass to :class:`Stream`.
 
@@ -1161,7 +1155,7 @@ class DuplexStream(InputStream, OutputStream):
 
     Parameters
     ----------
-    **kwargs
+    *args, **kwargs
         Arguments to pass to :class:`Stream`.
 
     See Also
@@ -1184,8 +1178,8 @@ class DuplexStream(InputStream, OutputStream):
 
         Other Parameters
         ----------------
-        **kwargs
-            Parameters to Stream constructor
+        *args, **kwargs
+            Arguments to pass to Stream constructor
 
         Returns
         -------
@@ -1515,7 +1509,7 @@ PortAudio default device(s).''')
         dest='dtype', type=lambda x: csvtype(x, nullortype),
         help='''\
 Sample format(s) of audio device stream. Must be one of {%s}.'''
-% ', '.join(['-'] + list(_sd._sampleformats.keys())))
+% ', '.join(['null'] + list(_sd._sampleformats.keys())))
 
     devopts.add_argument("-r", "--rate", dest='samplerate', type=possizetype,
         help='''\
@@ -1531,7 +1525,7 @@ Options accept single values or pairs. One of {null, {}} or an empty string
         help='''\
 Audio file type(s). (Required for RAW files). Typically this is determined
 from the file header or extension, but it can be manually specified here. Must
-be one of {%s}.''' % ', '.join(['-'] + list(_sf.available_formats().keys())))
+be one of {%s}.''' % ', '.join(['null'] + list(_sf.available_formats().keys())))
 
     fileopts.add_argument("-e", "--encoding", metavar="encoding[,encoding]",
         type=lambda x: csvtype(x, lambda y: nullortype(y, str.upper)),
@@ -1540,12 +1534,12 @@ Sample format encoding(s). Note for output file encodings: for file types that
 support PCM or FLOAT format, pastream will automatically choose the sample
 format that most closely matches the output device stream; for other file
 types, the subtype is required. Must be one of {%s}.'''
-% ', '.join(['-'] + list(_sf.available_subtypes().keys())))
+% ', '.join(['null'] + list(_sf.available_subtypes().keys())))
 
     fileopts.add_argument("--endian", metavar="endian[,endian]",
         type=lambda x: csvtype(x, lambda y: nullortype(y, str.lower)),
         help='''\
-Sample endianness. Must be one of {%s}.''' % ', '.join(['-'] + ['file', 'big', 'little']))
+Sample endianness. Must be one of {%s}.''' % ', '.join(['null'] + ['file', 'big', 'little']))
 
     return parser
 
