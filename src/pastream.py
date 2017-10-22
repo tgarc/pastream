@@ -35,7 +35,7 @@ from pa_ringbuffer import _RingBufferBase
 _np = None # defer numpy import to speed up CLI
 
 
-__version__ = '0.0.8'
+__version__ = '0.1.0'
 
 
 # Set a default size for the audio callback ring buffer
