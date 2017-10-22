@@ -35,7 +35,7 @@ from pa_ringbuffer import _RingBufferBase
 _np = None # defer numpy import to speed up CLI
 
 
-__version__ = '0.8.0'
+__version__ = '0.0.8'
 
 
 # Set a default size for the audio callback ring buffer
@@ -213,6 +213,8 @@ class Stream(_sd._StreamBase):
     class.
 
     """
+    _soundfileplayer = staticmethod(_soundfileplayer)
+    _soundfilerecorder = staticmethod(_soundfilerecorder)
 
     def __init__(self, kind, device=None, samplerate=None, channels=None,
                  dtype=None, blocksize=None, **kwargs):
@@ -624,35 +626,34 @@ class Stream(_sd._StreamBase):
 # Mix-in purely for adding playback methods
 class _OutputStreamMixin(object):
 
-    def set_source(self, playback, loop=False, buffersize=None, writer=None, args=(), kwargs={}):
+    def set_source(self, source, buffersize=None, loop=False, args=(), kwargs={}):
         '''Set the playback source for the audio stream
 
         Parameters
         -----------
-        playback : RingBuffer or SoundFile or buffer
-            Playback source.
+        source : function or RingBuffer or SoundFile or buffer type
+            Playback source. If `source` is a function it must be of the form:
+            ``function(stream, ringbuffer[, playback], *args, loop=<bool>,
+            **kwargs)``. Funcion sources are useful if you want to handle
+            generating playback in some custom way. For example, `source` could
+            be a function that reads audio data from a socket. This function
+            will be called from a separate thread whenever the stream is
+            started and is expected to close itself whenever the stream becomes
+            inactive. For an example see the ``_soundfileplayer`` function in
+            this module.
         loop : bool
             Whether to enable playback looping.
         buffersize : int
-            RingBuffer size to use for buffering file audio data or if writer
-            is specified this will determine the size of the buffer passed to
-            it.
-        writer : function
-            Playback handler function. Must be of the form: ``function(stream,
-            ringbuffer[, playback], *args, loop=<bool>, **kwargs)``. Use this
-            if you want to handle generating playback in some custom way. For
-            example, `writer` could be a function that reads audio data from a
-            socket. This function will be called from a separate thread
-            whenever the stream is started and is expected to close itself
-            whenever the stream becomes inactive. For an example see the
-            _soundfileplayer function in this module.
+            RingBuffer size to use for double buffering audio data. Only
+            applicable if `source` is a function or SoundFile. Must be a power
+            of 2.
         args, kwargs
-            Additional arguments to pass to `writer` function.
+            Additional arguments to pass if `source` is a function.
 
         Returns
         -------
-        RingBuffer or _LinearBuffer
-            Buffer from which audio device will read data.
+        RingBuffer instance
+            RingBuffer wrapper interface from which audio device will read audio data.
 
         '''
         if self.isduplex:
@@ -665,28 +666,28 @@ class _OutputStreamMixin(object):
         if buffersize is None:
             buffersize = _PA_BUFFERSIZE
 
-        if isinstance(playback, _sf.SoundFile):
-            if writer is None: writer = _soundfileplayer
-            if playback.samplerate != self.samplerate or playback.channels != channels:
+        writer = None
+        if isinstance(source, _sf.SoundFile):
+            writer = self._soundfileplayer
+            if source.samplerate != self.samplerate or source.channels != channels:
                 raise ValueError("Playback file samplerate/channels mismatch")
-            if loop and not playback.seekable():
+            if loop and not source.seekable():
                 raise ValueError("Can't loop playback; file is not seekable")
+            args, kwargs = (source,), {}
+        elif isinstance(source, RingBuffer):
+            buffer = source
+        elif callable(source):
+            writer = source
+        else:
+            buffer = _LinearBuffer(elementsize, source)
+            buffer.advance_write_index(len(buffer))
 
+        if writer is not None:
             # Only allocate a new buffer if an appropriate one is not already assigned
             buffer = self._txbuffer
             if buffer is None or len(buffer) != buffersize:
                 buffer = RingBuffer(elementsize, buffersize)
-            args = (playback,) + args
-        elif isinstance(playback, RingBuffer):
-            buffer = playback
-        else:
-            buffer = _LinearBuffer(elementsize, playback)
-            buffer.advance_write_index(len(buffer))
 
-        self._cstream.txbuffer = _ffi.cast('PaUtilRingBuffer*', buffer._ptr)
-        self._txbuffer = buffer
-
-        if writer is not None:
             # Assume the writer will take care of looping
             self._cstream.loop = 0
             kwargs['loop'] = loop
@@ -696,9 +697,12 @@ class _OutputStreamMixin(object):
             # null out any thread that was previously set
             self._txthread_args = None
 
+        self._cstream.txbuffer = _ffi.cast('PaUtilRingBuffer*', buffer._ptr)
+        self._txbuffer = buffer
+
         return buffer
 
-    def play(self, playback, frames=-1, pad=0, loop=False, blocking=False):
+    def play(self, playback, frames=-1, pad=0, loop=False, buffersize=None, blocking=False):
         """Play back audio data from a buffer or file
 
         Parameters
@@ -714,6 +718,10 @@ class _OutputStreamMixin(object):
             padding to be automatically chosen so that the total playback length
             matches `frames` (or, if frames is negative, zero padding will be added
             indefinitely).
+        buffersize : int
+            Buffer size to use for (double) buffering audio data from
+            file. Only applicable when `playback` is a file. Must be a power of
+            2.
 
         """
         # Null out any rx thread or rx buffer pointer but note that we
@@ -722,7 +730,7 @@ class _OutputStreamMixin(object):
         self._rxthread_args = None
         self._cstream.rxbuffer = _ffi.NULL
 
-        self.set_source(playback, loop)
+        self.set_source(playback, buffersize, loop)
 
         self._pad = pad
         self._frames = frames
@@ -791,32 +799,31 @@ class _InputStreamMixin(object):
         return _sf.SoundFile(file, 'w', int(self.samplerate), channels,
                     subtype=subtype, format=fformat, **kwargs)
 
-    def set_sink(self, out, buffersize=None, reader=None, args=(), kwargs={}):
+    def set_sink(self, sink, buffersize=None, args=(), kwargs={}):
         '''Set the recording sink for the audio stream
 
         Parameters
         -----------
-        out : RingBuffer or SoundFile or buffer
-            Recording sink.
+        sink : function or RingBuffer or SoundFile or buffer type
+            Recording sink. If `sink` is a function it must be of the form:
+            ``function(stream, ringbuffer, *args, **kwargs)``. Funcion sources
+            are useful if you want to handle capturing of audio data in some
+            custom way. For example, `sink` could be a function that writes
+            audio data directly to a socket.  This function will be called from
+            a separate thread whenever the stream is started and is expected to
+            close itself whenever the stream becomes inactive. For an example
+            see the ``_soundfilerecorder`` function in this module.
         buffersize : int
             RingBuffer size to use for (double) buffering audio data. Only
-            applicable when either `out` is a file or `reader` is specified.
-        reader : function
-            Recording handler function. Must be of the form: ``function(stream,
-            ringbuffer[, out], *args, **kwargs)``. Use this if you want to
-            handle capturing of audio data in some custom way. For example,
-            `reader` could be a function that writes audio data directly to a
-            socket.  This function will be called from a separate thread
-            whenever the stream is started and is expected to close itself
-            whenever the stream becomes inactive. For an example see the
-            _soundfilerecorder function in this module.
+            applicable when `sink` is either a file or function. Must be a
+            power of 2.
         args, kwargs
-            Additional arguments to pass to `reader` function.
+            Additional arguments to pass if `sink` is a function.
 
         Returns
         -------
-        RingBuffer or _LinearBuffer
-            Buffer to which audio device will write audio data.
+        RingBuffer instance
+            RingBuffer wrapper interface to which audio device will write audio data.
 
         '''
         if self.isduplex:
@@ -829,35 +836,36 @@ class _InputStreamMixin(object):
         if buffersize is None:
             buffersize = _PA_BUFFERSIZE
 
-        if isinstance(out, _sf.SoundFile):
-            if reader is None: reader = _soundfilerecorder
-            if out.samplerate != self.samplerate or out.channels != channels:
+        reader = None
+        if isinstance(sink, _sf.SoundFile):
+            reader = self._soundfilerecorder
+            if sink.samplerate != self.samplerate or sink.channels != channels:
                 raise ValueError("Recording file samplerate/channels mismatch")
+            args, kwargs = (sink,) + args, {}
+        elif isinstance(sink, RingBuffer):
+            buffer = sink
+        elif callable(sink):
+            reader = sink
+        else:
+            buffer = _LinearBuffer(elementsize, sink)
 
+        if reader is not None:
             # Only allocate a new buffer if an appropriate one is not already assigned
             buffer = self._rxbuffer
             if buffer is None or len(buffer) != buffersize:
                 buffer = RingBuffer(elementsize, buffersize)
 
-            # Pass the file into the reader
-            args = (out,) + args
-        elif isinstance(out, RingBuffer):
-            buffer = out
-        else:
-            buffer = _LinearBuffer(elementsize, out)
-
-        self._cstream.rxbuffer = _ffi.cast('PaUtilRingBuffer*', buffer._ptr)
-        self._rxbuffer = buffer
-
-        if reader is not None:
             self._rxthread_args = reader, (buffer,) + args, kwargs
         else:
             # null out any thread that was previously set
             self._rxthread_args = None
 
+        self._cstream.rxbuffer = _ffi.cast('PaUtilRingBuffer*', buffer._ptr)
+        self._rxbuffer = buffer
+
         return buffer
 
-    def record(self, frames=None, offset=0, blocking=False, atleast_2d=False, out=None):
+    def record(self, frames=None, offset=0, atleast_2d=False, buffersize=None, blocking=False, out=None):
         """Record audio data to a buffer or file
 
         Parameters
@@ -867,6 +875,9 @@ class _InputStreamMixin(object):
             recordings to continue indefinitely.
         offset : int, optional
             Number of frames to discard from beginning of recording.
+        buffersize : int
+            Buffer size to use for (double) buffering audio data to file. Only
+            applicable when `out` is a file. Must be a power of 2.
         out : buffer or SoundFile, optional
             Output sink.
 
@@ -887,7 +898,7 @@ class _InputStreamMixin(object):
         self._txthread_args = None
         self._cstream.txbuffer = _ffi.NULL
 
-        capture = self.set_sink(out)
+        capture = self.set_sink(out, buffersize)
         isbuffer = not isinstance(out, _sf.SoundFile)
         if frames is not None:
             self._frames = frames
@@ -995,7 +1006,7 @@ class _InputStreamMixin(object):
         elif not self.isduplex:
             raise ValueError("playback not supported; this stream is input only")
         else:
-            self.set_source(playback, loop, buffersize)
+            self.set_source(playback, buffersize, loop)
 
         # Allocate a ringbuffer for double buffering input
         rxbuffer = self._rxbuffer
@@ -1207,7 +1218,7 @@ class DuplexStream(InputStream, OutputStream):
         return cls(*args, **kwargs)
 
     def playrec(self, playback, frames=None, pad=0, offset=0, atleast_2d=False,
-                loop=False, blocking=False, out=None):
+                loop=False, buffersize=None, blocking=False, out=None):
         """Simultaneously record and play audio data
 
         Parameters
@@ -1215,6 +1226,10 @@ class DuplexStream(InputStream, OutputStream):
         frames : int, sometimes optional
             Number of frames to play/record. This is required whenever
             `playback` is a file and `out` is not given.
+        buffersize : int
+            Buffer size to use for (double) buffering audio data to/from
+            file. Only applicable when one or both of {`playback`, `out`} is a
+            file. Must be a power of 2.
         pad, offset, atleast_2d, loop, blocking, out
             See description of :meth:`InputStream.record` and
             :meth:`OutputStream.play`.
@@ -1232,7 +1247,7 @@ class DuplexStream(InputStream, OutputStream):
         ichannels, ochannels = self.channels
         isamplesize, osamplesize = self.samplesize
 
-        self.set_source(playback, loop)
+        self.set_source(playback, buffersize, loop)
 
         # if playback is a file with no determined length we could get a
         # nonsensical value which may be negative or a huge number; thus we
@@ -1249,7 +1264,7 @@ class DuplexStream(InputStream, OutputStream):
         if atleast_2d and (_np is None or not isinstance(out, _np.ndarray)):
             raise ValueError("atleast_2d is only supported with numpy arrays")
 
-        capture = self.set_sink(out)
+        capture = self.set_sink(out, buffersize)
         isbuffer = not isinstance(out, _sf.SoundFile)
         if frames is not None:
             self._frames = frames
@@ -1331,13 +1346,13 @@ def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False, 
         kind = 'duplex'
         stream = DuplexStream.from_file(playback_fh, **kwargs)
         record_fh = stream.to_file(record, subtype=isubtype, endian=iendian, format=iformat)
-        stream.set_source(playback_fh, loop, buffersize)
+        stream.set_source(playback_fh, buffersize, loop)
         stream.set_sink(record_fh, buffersize)
     elif playback is not None:
         kind = 'output'
         record_fh = None
         stream = OutputStream.from_file(playback_fh, **kwargs)
-        stream.set_source(playback_fh, loop, buffersize)
+        stream.set_source(playback_fh, buffersize, loop)
     elif record is not None:
         kind = 'input'
         playback_fh = None

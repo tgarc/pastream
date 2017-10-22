@@ -369,8 +369,7 @@ def test_threaded_write_deferred_exception_handling(devargs):
         raise MyException(txmsg)
 
     stream = ps.OutputStream(**devargs)
-    ringbuff = ps.RingBuffer(stream.channels * stream.samplesize, 8192)
-    stream.set_source(ringbuff, writer=writer)
+    ringbuff = stream.set_source(writer, 8192)
     ringbuff.advance_write_index(len(ringbuff))
 
     with pytest.raises(MyException) as excinfo:
@@ -386,8 +385,7 @@ def test_threaded_read_deferred_exception_handling(devargs):
 
     # A reader exception should also stop the stream
     stream = ps.InputStream(**devargs)
-    ringbuff = ps.RingBuffer(stream.channels * stream.samplesize, 8192)
-    stream.set_sink(ringbuff, reader=reader)
+    ringbuff = stream.set_sink(reader, 8192)
     ringbuff.advance_write_index(len(ringbuff))
 
     with pytest.raises(MyException) as excinfo:
