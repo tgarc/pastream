@@ -347,12 +347,12 @@ class Stream(_sd._StreamBase):
             pass
 
     def _allocate_buffer(self, size, kind, atleast_2d=False, bufferclass=bytearray):
-        if self.isduplex:
-            isoutput = kind == 'output'
+        isoutput = kind == 'output'
+        try:
             channels = self.channels[isoutput]
             samplesize = self.samplesize[isoutput]
             dtype = self.dtype[isoutput]
-        else:
+        except TypeError:
             channels = self.channels
             samplesize = self.samplesize
             dtype = self.dtype
@@ -387,17 +387,11 @@ class Stream(_sd._StreamBase):
         if not isinstance(file, _sf.SoundFile):
             file = _sf.SoundFile(file)
 
-        try:
-            assert kwargs['samplerate'] is None or kwargs['samplerate'] == file.samplerate
-        except KeyError:
-            pass
-        kwargs['samplerate'] = file.samplerate
+        if kwargs.get('samplerate', None) is None:
+            kwargs['samplerate'] = file.samplerate
 
-        try:
-            assert kwargs['channels'] is None or kwargs['channels'] == file.channels
-        except KeyError:
-            pass
-        kwargs['channels'] = file.channels
+        if kwargs.get('channels', None) is None:
+            kwargs['channels'] = file.channels
 
         return cls(*args, **kwargs)
 
@@ -604,14 +598,20 @@ class Stream(_sd._StreamBase):
         self._reraise_exceptions()
 
     def __repr__(self):
-        if isinstance(self.device, int) or self.device[0] == self.device[1]:
-            name = "'%s'" % _sd.query_devices(self._device)['name']
-        else:
-            name = tuple(_sd.query_devices(d)['name'] for d in self._device)
-        if isinstance(self.channels, int) or self.channels[0] != self.channels[1]:
+        try:
+            if self.device[0] == self.device[1]:
+                name = "'%s'" % _sd.query_devices(self.device)['name']
+            else:
+                name = tuple(_sd.query_devices(d)['name'] for d in self.device)
+        except TypeError:
+            name = self.device
+        try:
+            if self.channels[0] != self.channels[1]:
+                channels = self.channels
+            else:
+                channels = self.channels[0]
+        except TypeError:
             channels = self.channels
-        else:
-            channels = self.channels[0]
         if self.dtype[0] == self.dtype[1]:
             # this is a hack that works only because there are no dtypes that
             # start with the same two characters
@@ -656,10 +656,10 @@ class _OutputStreamMixin(object):
             RingBuffer wrapper interface from which audio device will read audio data.
 
         '''
-        if self.isduplex:
+        try:
             channels = self.channels[1]
             elementsize = channels * self.samplesize[1]
-        else:
+        except TypeError:
             channels = self.channels
             elementsize = channels * self.samplesize
 
@@ -773,14 +773,14 @@ class _InputStreamMixin(object):
             except (AttributeError, IndexError):
                 fformat = None
 
-        if self.isduplex:
+        try:
             channels = self.channels[0]
             dtype = self.dtype[0]
             ssize = self.samplesize[0]
-        else:
+        except TypeError:
+            channels = self.channels
             dtype = self.dtype
             ssize = self.samplesize
-            channels = self.channels
 
         subtype = kwargs.pop('subtype', None)
         endian = kwargs.get('endian', None)
@@ -826,10 +826,10 @@ class _InputStreamMixin(object):
             RingBuffer wrapper interface to which audio device will write audio data.
 
         '''
-        if self.isduplex:
+        try:
             channels = self.channels[0]
             elementsize = channels * self.samplesize[0]
-        else:
+        except TypeError:
             channels = self.channels
             elementsize = channels * self.samplesize
 
@@ -968,16 +968,16 @@ class _InputStreamMixin(object):
             ``memoryview``).
 
         """
-        if self.isduplex:
+        try:
             channels = self.channels[0]
             samplesize = self.samplesize[0]
-            latency = self.latency[0]
             dtype = self.dtype[0]
-        else:
-            latency = self.latency
-            dtype = self.dtype
+            latency = self.latency[0]
+        except TypeError:
             channels = self.channels
             samplesize = self.samplesize
+            dtype = self.dtype
+            latency = self.latency
 
         if atleast_2d and (_np is None or not isinstance(out, _np.ndarray)):
             raise ValueError("atleast_2d is only supported with numpy arrays")
@@ -1201,20 +1201,15 @@ class DuplexStream(InputStream, OutputStream):
         if not isinstance(playback, _sf.SoundFile):
             playback = _sf.SoundFile(playback)
 
-        try:
-            if not (kwargs['samplerate'] is None or kwargs['samplerate'] == playback.samplerate):
-                raise ValueError("samplerate passed does not match samplerate of playback file")
-        except KeyError:
-            pass
-        kwargs['samplerate'] = playback.samplerate
+        if kwargs.get('samplerate', None) is None:
+            kwargs['samplerate'] = playback.samplerate
 
         channels = kwargs.pop('channels', None)
         try:
-            if not (channels is None or channels[1] is None or channels[1] == playback.channels):
-                raise ValueError("output channels passed does not match channels in playback file")
-            kwargs['channels'] = (channels[0], playback.channels)
+            kwargs['channels'] = (channels[0], channels[1] or playback.channels)
         except TypeError:
             kwargs['channels'] = (channels, playback.channels)
+
         return cls(*args, **kwargs)
 
     def playrec(self, playback, frames=None, pad=0, offset=0, atleast_2d=False,
