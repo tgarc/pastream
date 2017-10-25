@@ -619,7 +619,7 @@ class Stream(_sd._StreamBase):
         else:
             dtype = self.dtype
         return ("{0.__name__}({1}, samplerate={2._samplerate:.0f}, "
-                "channels={3}, dtype={4}, blocksize={2._blocksize})").format(
+                "channels={3}, dtype='{4}', blocksize={2._blocksize})").format(
             self.__class__, name, self, channels, dtype)
 
 
@@ -1425,7 +1425,7 @@ def _get_parser(parser=None):
         return x
 
     def posframestype(x):
-        if x.startswith('-1'):
+        if x.startswith('-'):
             raise ValueError("Must be a non-negative value.")
         return framestype(x)
 
@@ -1486,7 +1486,8 @@ default), then streaming will continue until there is no playback data
 remaining or, if no playback was given, recording will continue
 indefinitely.''')
 
-    propts.add_argument("-o", "--offset", type=posframestype, help='''\
+    propts.add_argument("-o", "--offset", type=posframestype, default=0,
+        help='''\
 Drop a number of frames from the start of a recording.''')
 
     propts.add_argument("-p", "--pad", type=framestype, nargs='?', default=0,
@@ -1572,7 +1573,7 @@ def _main(argv=None):
             args.output, args.input,
             buffersize=args.buffersize,
             loop=args.loop,
-            offset=unpack(args.offset),
+            offset=args.offset,
             pad=args.pad,
             frames=args.duration,
             samplerate=args.samplerate,
