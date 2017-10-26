@@ -54,10 +54,6 @@ paOutputOverflow = _lib.paOutputOverflow
 paOutputUnderflow = _lib.paOutputUnderflow
 
 
-# create an independent module level default
-default = type('default', (_sd.default.__class__,), {}).__call__()
-
-
 class BufferFull(Exception):
     pass
 

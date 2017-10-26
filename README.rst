@@ -145,6 +145,54 @@ Grab (real) frequency transformed live audio stream with 50% overlap:
    for x_l in ps.chunks(chunksize, overlap=chunksize//2, channels=1):
        X_l = np.fft.rfft(x_l * window)
 
+Generate a pure tone on-the-fly
+
+.. code-block:: python
+
+   import time
+   import pastream as ps
+   import numpy as np
+
+   # A simple tone generator
+   def tone_generator(stream, buffer, f, loop=False):
+       fs = stream.samplerate
+
+       # Create a time index
+       t = np.arange(len(buffer), dtype=stream.dtype) / fs
+
+       # Loop until the stream stops
+       while not stream.finished:
+           frames = buffer.write_available
+           if not frames:
+               time.sleep(0.010)
+               continue
+
+           # Get the write buffers directly to avoid creating any intermediate
+           # buffers
+           frames, part1, part2 = buffer.get_write_buffers(frames)
+
+           out = np.frombuffer(part1, dtype=stream.dtype)
+           np.sin(2*np.pi*f*t[:frames], out=out)
+
+           if len(part2):
+               # part2 will be nonempty whenever we wrap around the end of
+               # the ring buffer
+               out = np.frombuffer(part2, dtype=stream.dtype)
+               np.sin(2*np.pi*f*t[:frames], out=out)
+               buffer.advance_write_index(frames)
+
+           t += frames / fs
+
+   with ps.OutputStream(channels=1) as stream:
+       # Set our tone generator as the source and pass along the frequency
+       freq = 1000
+       stream.set_source(tone_generator, args=(freq,))
+
+       # Busy-wait to allow for keyboard interrupt
+       stream.start()
+       while stream.active:
+           time.sleep(0.1)
+
 See also the included examples under `/examples`.
 
 

@@ -29,7 +29,7 @@ setup(name='pastream',
           'pa_ringbuffer>=0.1.2',
           'cffi>=1.0.0',
           'soundfile>=0.9.0',
-          'sounddevice>=0.3.7',
+          'sounddevice>=0.3.9',
       ],
       tests_require=['pytest>=3.0', 'numpy'],
       extras_require={
