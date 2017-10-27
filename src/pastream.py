@@ -1420,6 +1420,11 @@ def _get_parser(parser=None):
         assert x > 0, "Must be a positive value."
         return x
 
+    def nonnegsizetype(x):
+        x = sizetype(x)
+        assert x >= 0, "Must be a non-negative value."
+        return x
+
     def posframestype(x):
         if x.startswith('-'):
             raise ValueError("Must be a non-negative value.")
@@ -1498,9 +1503,9 @@ duration is also negative, zero padding will be added indefinitely.''')
 Options accept single values or pairs. One of {null, {}) or an empty string
 ('') may be used as a placeholder for the default value.''')
 
-    devopts.add_argument("-b", "--blocksize", type=possizetype, help='''\
-PortAudio buffer size in units of frames. If not specified, backend will decide
-an optimal size (recommended). ''')
+    devopts.add_argument("-b", "--blocksize", type=nonnegsizetype, help='''\
+PortAudio buffer size in units of frames. If blocksize is zero,
+backend will decide an optimal size (recommended). Default is zero.''')
 
     devopts.add_argument("-c", "--channels", metavar='channels[,channels]',
         type=lambda x: csvtype(x, lambda y: nullortype(y, int)),
