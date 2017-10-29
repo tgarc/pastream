@@ -98,7 +98,8 @@ Then do a pip install from your working copy::
 Building Documentation
 ======================
 Documentation for pastream can be easily generated in a wide variety of formats
-using Sphinx. Just follow the steps below.
+using Sphinx. Just follow the steps below. Note that this only works with
+python 2 ATM since rst2pdf does not yet officially support python 3.
 
 Checkout the repository::
 
@@ -158,7 +159,7 @@ Generate a pure tone on-the-fly
        fs = stream.samplerate
 
        # Create a time index
-       t = np.arange(len(buffer), dtype=stream.dtype) / fs
+       t = 2*np.pi*f*np.arange(len(buffer), dtype=stream.dtype) / fs
 
        # Loop until the stream stops
        while not stream.finished:
@@ -167,21 +168,22 @@ Generate a pure tone on-the-fly
                time.sleep(0.010)
                continue
 
-           # Get the write buffers directly to avoid creating any intermediate
-           # buffers
+           # Get the write buffers directly to avoid making any extra copies
            frames, part1, part2 = buffer.get_write_buffers(frames)
 
            out = np.frombuffer(part1, dtype=stream.dtype)
-           np.sin(2*np.pi*f*t[:frames], out=out)
+           np.sin(t[:len(out)], out=out)
 
            if len(part2):
-               # part2 will be nonempty whenever we wrap around the end of
-               # the ring buffer
+               # part2 will be nonempty whenever we wrap around the end of the ring buffer
                out = np.frombuffer(part2, dtype=stream.dtype)
-               np.sin(2*np.pi*f*t[:frames], out=out)
-               buffer.advance_write_index(frames)
+               np.sin(t[:len(out)], out=out)
 
-           t += frames / fs
+           # flag that we've added data to the buffer
+           buffer.advance_write_index(frames)
+
+           # advance the time index
+           t += 2*np.pi*f*frames / fs
 
    with ps.OutputStream(channels=1) as stream:
        # Set our tone generator as the source and pass along the frequency

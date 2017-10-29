@@ -34,7 +34,7 @@ setup(name='pastream',
       tests_require=['pytest>=3.0', 'numpy'],
       extras_require={
           'examples': ['numpy', 'matplotlib'],
-          'docs': ['sphinx', 'sphinx_rtd_theme', 'rst2pdf']
+          'docs': ['sphinx', 'sphinx_rtd_theme', 'rst2pdf', 'sphinx-argparse']
       },
       classifiers=[
           'License :: OSI Approved :: MIT License',

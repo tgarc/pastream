@@ -376,8 +376,12 @@ class Stream(_sd._StreamBase):
 
         Returns
         -------
-        Stream
+        Stream or Stream subclass instance
             Open stream
+
+        See Also
+        --------
+        :meth:`InputStream.to_file`
 
         """
         if not isinstance(file, _sf.SoundFile):
@@ -629,14 +633,14 @@ class _OutputStreamMixin(object):
         -----------
         source : function or RingBuffer or SoundFile or buffer type
             Playback source. If `source` is a function it must be of the form:
-            ``function(stream, ringbuffer[, playback], *args, loop=<bool>,
-            **kwargs)``. Funcion sources are useful if you want to handle
-            generating playback in some custom way. For example, `source` could
-            be a function that reads audio data from a socket. This function
-            will be called from a separate thread whenever the stream is
-            started and is expected to close itself whenever the stream becomes
-            inactive. For an example see the ``_soundfileplayer`` function in
-            this module.
+            ``function(stream, ringbuffer, *args, loop=<bool>,**kwargs)``.
+            Funcion sources are useful if you want to handle generating
+            playback in some custom way. For example, `source` could be a
+            function that reads audio data from a socket. This function will be
+            called from a separate thread whenever the stream is started and is
+            expected to close itself whenever the stream becomes inactive. For
+            an example see the ``_soundfileplayer`` function in the source code
+            for this module.
         loop : bool
             Whether to enable playback looping.
         buffersize : int
@@ -650,6 +654,10 @@ class _OutputStreamMixin(object):
         -------
         RingBuffer instance
             RingBuffer wrapper interface from which audio device will read audio data.
+
+        See Also
+        --------
+        :meth:`InputStream.set_sink`
 
         '''
         try:
@@ -759,6 +767,10 @@ class _InputStreamMixin(object):
         -------
         SoundFile
 
+        See Also
+        --------
+        :meth:`Stream.from_file`
+
         '''
         # Try and determine the file extension here; we need to know if we
         # want to try and set a default subtype for the file
@@ -778,6 +790,11 @@ class _InputStreamMixin(object):
             dtype = self.dtype
             ssize = self.samplesize
 
+        if kwargs.get('samplerate', None) is None:
+            kwargs['samplerate'] = int(self.samplerate)
+        if kwargs.get('channels', None) is None:
+            kwargs['channels'] = channels
+
         subtype = kwargs.pop('subtype', None)
         endian = kwargs.get('endian', None)
         if not subtype:
@@ -792,8 +809,7 @@ class _InputStreamMixin(object):
                     "an appropriate subtype for '{1}' format; please specify"
                     .format(dtype, fformat))
 
-        return _sf.SoundFile(file, 'w', int(self.samplerate), channels,
-                    subtype=subtype, format=fformat, **kwargs)
+        return _sf.SoundFile(file, 'w', subtype=subtype, format=fformat, **kwargs)
 
     def set_sink(self, sink, buffersize=None, args=(), kwargs={}):
         '''Set the recording sink for the audio stream
@@ -808,7 +824,8 @@ class _InputStreamMixin(object):
             audio data directly to a socket.  This function will be called from
             a separate thread whenever the stream is started and is expected to
             close itself whenever the stream becomes inactive. For an example
-            see the ``_soundfilerecorder`` function in this module.
+            see the ``_soundfilerecorder`` function in the source code for this
+            module.
         buffersize : int
             RingBuffer size to use for (double) buffering audio data. Only
             applicable when `sink` is either a file or function. Must be a
@@ -820,6 +837,10 @@ class _InputStreamMixin(object):
         -------
         RingBuffer instance
             RingBuffer wrapper interface to which audio device will write audio data.
+
+        See Also
+        --------
+        :meth:`OutputStream.set_source`
 
         '''
         try:
@@ -866,12 +887,11 @@ class _InputStreamMixin(object):
 
         Parameters
         -----------
-        frames : int, optional
-            Number of frames to record. A negative value (the default) causes
-            recordings to continue indefinitely.
+        frames : int, sometimes optional
+            Number of frames to record. Can be omitted if `out` is specified.
         offset : int, optional
             Number of frames to discard from beginning of recording.
-        buffersize : int
+        buffersize : int, optional
             Buffer size to use for (double) buffering audio data to file. Only
             applicable when `out` is a file. Must be a power of 2.
         out : buffer or SoundFile, optional
@@ -881,6 +901,10 @@ class _InputStreamMixin(object):
         -------
         ndarray or bytearray or type(out)
             Recording destination.
+
+        See Also
+        --------
+        :meth:`OutputStream.play`, :meth:`DuplexStream.playrec`
 
         """
         if frames is None and out is None:
@@ -938,7 +962,8 @@ class _InputStreamMixin(object):
         frames : int, optional
             Number of frames to play/record.
         pad : int, optional
-            Playback padding. See :meth:`OutputStream.play`. Only applicable when playback is given.
+            Playback padding. See :meth:`OutputStream.play`. Only applicable
+            when playback is given.
         offset : int, optional
             Recording offset. See :meth:`InputStream.record`.
         atleast_2d : bool, optional
@@ -950,10 +975,10 @@ class _InputStreamMixin(object):
             Loop the playback audio.
         out : :class:`~numpy.ndarray` or buffer object, optional
             Alternative output buffer in which to store the result. Note that
-            any buffer object - with the exception of :class:`~numpy.ndarray` - is
-            expected to have single-byte elements as would be provided by e.g.,
-            ``bytearray``. ``bytes`` objects are not recommended as they will
-            incur extra copies (use ``bytearray`` instead).
+            any buffer object - with the exception of :class:`~numpy.ndarray` -
+            is expected to have single-byte elements as would be provided by
+            e.g., ``bytearray``. ``bytes`` objects are not recommended as they
+            will incur extra copies (use ``bytearray`` instead).
 
         Yields
         ------
@@ -962,6 +987,10 @@ class _InputStreamMixin(object):
             defaults to :class:`~numpy.ndarray` otherwise a buffer of bytes is
             yielded (which is either a :class:`cffi.buffer` object or a
             ``memoryview``).
+
+        See Also
+        --------
+        :meth:`chunks`
 
         """
         try:
@@ -1134,8 +1163,8 @@ class _InputStreamMixin(object):
 class InputStream(_InputStreamMixin, Stream):
     """Record only stream.
 
-    Parameters
-    ----------
+    Other Parameters
+    ----------------
     *args, **kwargs
         Arguments to pass to :class:`Stream`.
 
@@ -1147,8 +1176,8 @@ class InputStream(_InputStreamMixin, Stream):
 class OutputStream(_OutputStreamMixin, Stream):
     """Playback only stream.
 
-    Parameters
-    ----------
+    Other Parameters
+    ----------------
     *args, **kwargs
         Arguments to pass to :class:`Stream`.
 
@@ -1160,8 +1189,8 @@ class OutputStream(_OutputStreamMixin, Stream):
 class DuplexStream(InputStream, OutputStream):
     """Full duplex audio streamer.
 
-    Parameters
-    ----------
+    Other Parameters
+    ----------------
     *args, **kwargs
         Arguments to pass to :class:`Stream`.
 
@@ -1192,6 +1221,10 @@ class DuplexStream(InputStream, OutputStream):
         -------
         Stream
             Open stream
+
+        See Also
+        --------
+        :meth:`InputStream.to_file`
 
         """
         if not isinstance(playback, _sf.SoundFile):
