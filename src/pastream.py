@@ -32,7 +32,6 @@ import sounddevice as _sd
 import soundfile as _sf
 from _py_pastream import ffi as _ffi, lib as _lib
 from pa_ringbuffer import _RingBufferBase
-_np = None # defer numpy import to speed up CLI
 
 
 __version__ = '0.1.0'
@@ -40,6 +39,9 @@ __version__ = '0.1.0'
 
 # Set a default size for the audio callback ring buffer
 _PA_BUFFERSIZE = 1 << 16
+
+# Determines the blocksize for reading/writing sound files
+_FILECHUNKSIZE = 4096
 
 # Private states that determine how a stream completed
 _FINISHED = 1
@@ -128,11 +130,13 @@ def _soundfilerecorder(stream, rxbuffer, inp_fh):
     else:
         dtype = stream.dtype
 
-    chunksize = min(8192, len(rxbuffer))
+    chunksize = min(_FILECHUNKSIZE, len(rxbuffer))
+
     sleeptime = (chunksize - rxbuffer.read_available + stream._offset)\
         / stream.samplerate
     if sleeptime > 0:
         _time.sleep(sleeptime)
+
     while not stream.aborted:
         # for thread safety, check the stream is active *before* reading
         active = stream.active
@@ -156,8 +160,8 @@ def _soundfilerecorder(stream, rxbuffer, inp_fh):
             _time.sleep(sleeptime)
 
 
-# Default handler for reading input from a SoundFile object and writing it to a
-# Stream
+# Default handler for reading input from a SoundFile object and
+# writing it to a Stream
 def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
     readinto = out_fh.buffer_read_into
     if stream.isduplex:
@@ -165,10 +169,7 @@ def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
     else:
         dtype = stream.dtype
 
-    chunksize = min(8192, len(txbuffer))
-    sleeptime = (chunksize - txbuffer.write_available) / stream.samplerate
-    if sleeptime > 0:
-        _time.sleep(sleeptime)
+    chunksize = min(_FILECHUNKSIZE, len(txbuffer))
     while not stream.finished:
         frames = txbuffer.write_available
         if not frames:
@@ -237,7 +238,6 @@ class Stream(_sd._StreamBase):
         self.__exceptions = _queue.Queue()
 
         # Set up reader/writer threads
-        self._owner_thread = _threading.current_thread()
         self._rxthread = self._txthread = None
         self._txthread_args = self._rxthread_args = None
 
@@ -355,11 +355,12 @@ class Stream(_sd._StreamBase):
 
         if issubclass(bufferclass, _RingBufferBase):
             return bufferclass(channels * samplesize, size)
-        elif _np is None:
+        try:
+            import numpy
+            return numpy.zeros((size, channels) if atleast_2d or channels > 1
+                               else size * channels, dtype=dtype)
+        except ImportError:
             return bufferclass(size * channels * samplesize)
-        else:
-            return _np.zeros((size, channels) if atleast_2d or channels > 1
-                             else size * channels, dtype=dtype)
 
     @classmethod
     def from_file(cls, file, *args, **kwargs):
@@ -422,6 +423,7 @@ class Stream(_sd._StreamBase):
 
     @property
     def isduplex(self):
+        """Return whether this is a full duplex stream or not"""
         return hasattr(self.channels, '__len__')
 
     @property
@@ -551,18 +553,22 @@ class Stream(_sd._StreamBase):
 
         Parameters
         ----------
-        prebuffer : bool, optional
-            For threading only: wait for the first output write before starting
-            the audio stream. If not using threads this has no effect.
+        prebuffer : bool or int, optional
+            Wait for a number of frames to be written to the output
+            buffer before starting the audio stream. If True is given
+            just wait for the first write. If not using threads or the
+            stream is not an output stream this has no effect.
         """
         self._prepare()
         if self._txthread is not None:
             self._txthread.start()
-            if prebuffer:
-                while not _lib.PaUtil_GetRingBufferReadAvailable(self._cstream.txbuffer) \
-                      and self._txthread.is_alive():
-                    _time.sleep(0.0025)
+            txbuffer = self._cstream.txbuffer
+            prebuffer = int(prebuffer)
+            while _lib.PaUtil_GetRingBufferReadAvailable(txbuffer) < prebuffer\
+                and self._txthread.is_alive():
+                _time.sleep(0.0025)
             self._reraise_exceptions()
+
         super(Stream, self).start()
 
         if self._rxthread is not None:
@@ -584,9 +590,9 @@ class Stream(_sd._StreamBase):
         self._reraise_exceptions()
 
     def close(self):
-        # we take special care here to abort the stream first so that the
-        # pastream pointer is still valid for the lifetime of the read/write
-        # threads
+        # we take special care here to abort the stream first so that
+        # the pastream pointer is still valid for the lifetime of the
+        # read/write threads
         if not self.finished:
             with self.__statecond:
                 self.__aborting = True
@@ -595,6 +601,11 @@ class Stream(_sd._StreamBase):
         self.__stopiothreads()
         with self.__streamlock:
             super(Stream, self).close()
+
+        # Drop references to any buffers and external objects
+        self._txthread_args = self._rxthread_args = None
+        self._rxbuffer = self._txbuffer = None
+
         self._reraise_exceptions()
 
     def __repr__(self):
@@ -907,11 +918,16 @@ class _InputStreamMixin(object):
         :meth:`OutputStream.play`, :meth:`DuplexStream.playrec`
 
         """
+        try:
+            import numpy
+        except ImportError:
+            numpy = None
+
         if frames is None and out is None:
             raise TypeError("at least one of {frames, out} is required")
         if out is None:
             out = self._allocate_buffer(frames - offset, 'input', atleast_2d)
-        if atleast_2d and (_np is None or not isinstance(out, _np.ndarray)):
+        if atleast_2d and (numpy is None or not isinstance(out, numpy.ndarray)):
             raise ValueError("atleast_2d is only supported with numpy arrays")
 
         # Null out any previously set tx buffer/threads (see comment in play())
@@ -922,8 +938,6 @@ class _InputStreamMixin(object):
         isbuffer = not isinstance(out, _sf.SoundFile)
         if frames is not None:
             self._frames = frames
-            if isbuffer:
-                assert frames <= len(capture) + offset
         elif isbuffer:
             self._frames = len(capture) + offset
         else:
@@ -1004,7 +1018,12 @@ class _InputStreamMixin(object):
             dtype = self.dtype
             latency = self.latency
 
-        if atleast_2d and (_np is None or not isinstance(out, _np.ndarray)):
+        try:
+            import numpy
+        except ImportError:
+            numpy = None
+
+        if atleast_2d and (numpy is None or not isinstance(out, numpy.ndarray)):
             raise ValueError("atleast_2d is only supported with numpy arrays")
 
         varsize = False
@@ -1043,28 +1062,25 @@ class _InputStreamMixin(object):
         # Clear any previous receive thread
         self._rxthread_args = None
 
-        numpy = False
         if out is not None:
             tempbuff = out
-            if _np is not None and isinstance(out, _np.ndarray):
-                numpy = True
+            if numpy is not None and isinstance(out, numpy.ndarray):
                 try:                   bytebuff = tempbuff.data.cast('B')
                 except AttributeError: bytebuff = tempbuff.data
             else:
                 bytebuff = tempbuff
-        elif _np is None:
+        elif numpy is None:
             if varsize: nbytes = len(rxbuffer) * rxbuffer.elementsize
             else:       nbytes = chunksize * rxbuffer.elementsize
             # Indexing into a bytearray creates a copy, so just use a
             # memoryview
             bytebuff = tempbuff = memoryview(bytearray(nbytes))
         else:
-            numpy = True
             if channels > 1: atleast_2d = True
             if varsize: nframes = len(rxbuffer)
             else:       nframes = chunksize
-            tempbuff = _np.zeros((nframes, channels) if atleast_2d
-                                 else nframes * channels, dtype=dtype)
+            tempbuff = numpy.zeros((nframes, channels) if atleast_2d
+                                   else nframes * channels, dtype=dtype)
             try:                   bytebuff = tempbuff.data.cast('B')
             except AttributeError: bytebuff = tempbuff.data
 
@@ -1128,18 +1144,18 @@ class _InputStreamMixin(object):
                     bytebuff[:buffsz1] = buffregn1
                     bytebuff[buffsz1:buffsz1 + len(buffregn2)] = buffregn2
                     rxbuffer.advance_read_index(frames - overlap)
-                    if numpy:
-                        yield tempbuff[:frames]
-                    else:
+                    if numpy is None:
                         yield bytebuff[:frames * rxbuffer.elementsize]
+                    else:
+                        yield tempbuff[:frames]
                 else:
                     if atleast_2d:
-                        yield _np.frombuffer(buffregn1, dtype=dtype)\
+                        yield numpy.frombuffer(buffregn1, dtype=dtype)\
                                  .reshape(frames, channels)
-                    elif numpy:
-                        yield _np.frombuffer(buffregn1, dtype=dtype)
-                    else:
+                    elif numpy is None:
                         yield buffregn1
+                    else:
+                        yield numpy.frombuffer(buffregn1, dtype=dtype)
                     rxbuffer.advance_read_index(frames - overlap)
 
                 # # DEBUG
@@ -1268,6 +1284,11 @@ class DuplexStream(InputStream, OutputStream):
         :meth:`OutputStream.play`, :meth:`InputStream.record`
 
         """
+        try:
+            import numpy
+        except ImportError:
+            numpy = None
+
         ichannels, ochannels = self.channels
         isamplesize, osamplesize = self.samplesize
 
@@ -1285,15 +1306,13 @@ class DuplexStream(InputStream, OutputStream):
                 raise ValueError("frames must be >= offset")
             out = self._allocate_buffer(frames - offset + (pad if pad >= 0 else 0), 'input')
 
-        if atleast_2d and (_np is None or not isinstance(out, _np.ndarray)):
+        if atleast_2d and (numpy is None or not isinstance(out, numpy.ndarray)):
             raise ValueError("atleast_2d is only supported with numpy arrays")
 
         capture = self.set_sink(out, buffersize)
         isbuffer = not isinstance(out, _sf.SoundFile)
         if frames is not None:
             self._frames = frames
-            if isbuffer:
-                assert frames + (pad if pad >= 0 else 0) <= len(capture) + offset
         elif isbuffer:
             self._frames = len(capture) + offset
         else:
@@ -1660,8 +1679,3 @@ def _main(argv=None):
 
 if __name__ == '__main__':
     _sys.exit(_main())
-else:
-    try:
-        import numpy as _np
-    except ImportError:
-        pass
