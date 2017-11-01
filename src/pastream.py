@@ -125,18 +125,19 @@ class _LinearBuffer(RingBuffer):
 
 # Default handler for writing input from a Stream to a SoundFile object
 def _soundfilerecorder(stream, rxbuffer, inp_fh):
-    if stream.isduplex:
+    try:
+        latency = stream.latency[0]
         dtype = stream.dtype[0]
-    else:
+    except TypeError:
+        latency = stream.latency
         dtype = stream.dtype
 
-    chunksize = min(_FILECHUNKSIZE, len(rxbuffer))
-
-    sleeptime = (chunksize - rxbuffer.read_available + stream._offset)\
+    sleeptime = latency - (rxbuffer.read_available - stream._offset)\
         / stream.samplerate
     if sleeptime > 0:
         _time.sleep(sleeptime)
 
+    chunksize = min(_FILECHUNKSIZE, len(rxbuffer))
     while not stream.aborted:
         # for thread safety, check the stream is active *before* reading
         active = stream.active
@@ -163,12 +164,12 @@ def _soundfilerecorder(stream, rxbuffer, inp_fh):
 # Default handler for reading input from a SoundFile object and
 # writing it to a Stream
 def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
-    readinto = out_fh.buffer_read_into
     if stream.isduplex:
         dtype = stream.dtype[1]
     else:
         dtype = stream.dtype
 
+    readinto = out_fh.buffer_read_into
     chunksize = min(_FILECHUNKSIZE, len(txbuffer))
     while not stream.finished:
         frames = txbuffer.write_available
@@ -193,6 +194,7 @@ def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
                     readframes += readinto(buffregn1[readbytes:], dtype=dtype)
                 else:
                     readframes += readinto(buffregn2[readbytes-len(buffregn1):], dtype=dtype)
+
         txbuffer.advance_write_index(readframes)
         if readframes < frames:
             break
@@ -290,6 +292,7 @@ class Stream(_sd._StreamBase):
            and self._txthread != currthread:
             self._txthread.join()
 
+    # TODO: add ability to re-enter rwfunc without having to recreate the thread
     def _readwritewrapper(self, rwfunc, *args, **kwargs):
         """\
         Wrapper for the reader and writer functions which acts as a kind
@@ -652,12 +655,15 @@ class _OutputStreamMixin(object):
             expected to close itself whenever the stream becomes inactive. For
             an example see the ``_soundfileplayer`` function in the source code
             for this module.
-        loop : bool
+        loop : bool, optional
             Whether to enable playback looping.
-        buffersize : int
+        buffersize : int, optional
             RingBuffer size to use for double buffering audio data. Only
             applicable if `source` is a function or SoundFile. Must be a power
             of 2.
+
+        Other Parameters
+        -----------------
         args, kwargs
             Additional arguments to pass if `source` is a function.
 
@@ -702,6 +708,8 @@ class _OutputStreamMixin(object):
             buffer = self._txbuffer
             if buffer is None or len(buffer) != buffersize:
                 buffer = RingBuffer(elementsize, buffersize)
+            else:
+                buffer.flush()
 
             # Assume the writer will take care of looping
             self._cstream.loop = 0
@@ -758,7 +766,7 @@ class _OutputStreamMixin(object):
 # Mix-in purely for adding recording methods
 class _InputStreamMixin(object):
 
-    def to_file(self, file, **kwargs):
+    def to_file(self, file, mode='w', **kwargs):
         '''Open a SoundFile for writing based on stream characteristics
 
         Parameters
@@ -820,7 +828,7 @@ class _InputStreamMixin(object):
                     "an appropriate subtype for '{1}' format; please specify"
                     .format(dtype, fformat))
 
-        return _sf.SoundFile(file, 'w', subtype=subtype, format=fformat, **kwargs)
+        return _sf.SoundFile(file, mode, subtype=subtype, format=fformat, **kwargs)
 
     def set_sink(self, sink, buffersize=None, args=(), kwargs={}):
         '''Set the recording sink for the audio stream
@@ -837,7 +845,7 @@ class _InputStreamMixin(object):
             close itself whenever the stream becomes inactive. For an example
             see the ``_soundfilerecorder`` function in the source code for this
             module.
-        buffersize : int
+        buffersize : int, optional
             RingBuffer size to use for (double) buffering audio data. Only
             applicable when `sink` is either a file or function. Must be a
             power of 2.
@@ -882,6 +890,8 @@ class _InputStreamMixin(object):
             buffer = self._rxbuffer
             if buffer is None or len(buffer) != buffersize:
                 buffer = RingBuffer(elementsize, buffersize)
+            else:
+                buffer.flush()
 
             self._rxthread_args = reader, (buffer,) + args, kwargs
         else:
@@ -991,8 +1001,7 @@ class _InputStreamMixin(object):
             Alternative output buffer in which to store the result. Note that
             any buffer object - with the exception of :class:`~numpy.ndarray` -
             is expected to have single-byte elements as would be provided by
-            e.g., ``bytearray``. ``bytes`` objects are not recommended as they
-            will incur extra copies (use ``bytearray`` instead).
+            e.g., ``bytearray``.
 
         Yields
         ------
@@ -1017,6 +1026,7 @@ class _InputStreamMixin(object):
             samplesize = self.samplesize
             dtype = self.dtype
             latency = self.latency
+        elementsize = channels * samplesize
 
         try:
             import numpy
@@ -1044,52 +1054,56 @@ class _InputStreamMixin(object):
         if buffersize is None:
             buffersize = _PA_BUFFERSIZE
 
-        if playback is None:
-            self._txthread_args = None
-            self._cstream.txbuffer = _ffi.NULL
-        elif not self.isduplex:
-            raise ValueError("playback not supported; this stream is input only")
-        else:
-            self.set_source(playback, buffersize, loop)
-
         # Allocate a ringbuffer for double buffering input
         rxbuffer = self._rxbuffer
-        if not isinstance(buffer, RingBuffer) or len(buffer) != buffersize:
-            rxbuffer = RingBuffer(samplesize * channels, buffersize)
+        if not isinstance(rxbuffer, RingBuffer) or len(rxbuffer) != buffersize:
+            rxbuffer = RingBuffer(elementsize, buffersize)
+        else:
+            rxbuffer.flush()
         self._cstream.rxbuffer = _ffi.cast('PaUtilRingBuffer*', rxbuffer._ptr)
         self._rxbuffer = rxbuffer
 
         # Clear any previous receive thread
         self._rxthread_args = None
 
+        if playback is None:
+            self._txthread_args = None
+            self._cstream.txbuffer = _ffi.NULL
+        elif not self.isduplex:
+            raise ValueError("playback not supported; this stream is input only")
+        elif playback is True:
+            pass
+        else:
+            self.set_source(playback, buffersize, loop)
+
+        ndarray = False
         if out is not None:
             tempbuff = out
             if numpy is not None and isinstance(out, numpy.ndarray):
+                ndarray = True
                 try:                   bytebuff = tempbuff.data.cast('B')
                 except AttributeError: bytebuff = tempbuff.data
             else:
                 bytebuff = tempbuff
         elif numpy is None:
-            if varsize: nbytes = len(rxbuffer) * rxbuffer.elementsize
-            else:       nbytes = chunksize * rxbuffer.elementsize
-            # Indexing into a bytearray creates a copy, so just use a
+            if varsize: nbytes = len(rxbuffer) * elementsize
+            else:       nbytes = chunksize * elementsize
+            # Indexing into a bytearray creates a copy, so wrap it with a
             # memoryview
             bytebuff = tempbuff = memoryview(bytearray(nbytes))
         else:
-            if channels > 1: atleast_2d = True
+            ndarray = True
             if varsize: nframes = len(rxbuffer)
             else:       nframes = chunksize
+            if channels > 1: atleast_2d = True
             tempbuff = numpy.zeros((nframes, channels) if atleast_2d
                                    else nframes * channels, dtype=dtype)
             try:                   bytebuff = tempbuff.data.cast('B')
             except AttributeError: bytebuff = tempbuff.data
 
-        boverlap = overlap * rxbuffer.elementsize
-        minframes = 1 if varsize else chunksize
-
         # fill the first overlap block with zeros
         if overlap:
-            rxbuffer.write(bytearray(boverlap))
+            rxbuffer.write(bytearray(overlap * elementsize))
 
         # DEBUG
         # logf = open('chunks2.log', 'wt')
@@ -1099,11 +1113,11 @@ class _InputStreamMixin(object):
         wait_time = leadtime = 0
         done = False
 
+        minframes = 1 if varsize else chunksize
         self._offset = offset
         self._frames = frames
         self._pad = pad
         self.start()
-
         try:
             sleeptime = latency - \
                 (rxbuffer.read_available - offset - overlap) / self.samplerate
@@ -1144,18 +1158,18 @@ class _InputStreamMixin(object):
                     bytebuff[:buffsz1] = buffregn1
                     bytebuff[buffsz1:buffsz1 + len(buffregn2)] = buffregn2
                     rxbuffer.advance_read_index(frames - overlap)
-                    if numpy is None:
-                        yield bytebuff[:frames * rxbuffer.elementsize]
+                    if not ndarray:
+                        yield bytebuff[:frames * elementsize]
                     else:
                         yield tempbuff[:frames]
                 else:
                     if atleast_2d:
                         yield numpy.frombuffer(buffregn1, dtype=dtype)\
                                  .reshape(frames, channels)
-                    elif numpy is None:
-                        yield buffregn1
-                    else:
+                    elif ndarray:
                         yield numpy.frombuffer(buffregn1, dtype=dtype)
+                    else:
+                        yield buffregn1
                     rxbuffer.advance_read_index(frames - overlap)
 
                 # # DEBUG
@@ -1645,10 +1659,10 @@ def _main(argv=None):
     if args.output == '-' or args.quiet:
         _sys.stdout = open(os.devnull, 'w')
 
-    statline = "\r  {:02.0f}:{:02.0f}:{:02.2f}s ({:d} xruns, {:6.2f}% load)\r"
+    statline = "\r   {:02.0f}:{:02.0f}:{:02.2f}s ({:d} xruns, {:6.2f}% load)\r"
     print("<-", 'null' if playback is None else playback)
+    print("--", stream)
     print("->", 'null' if record is None else record)
-    print(["--", "->", "<-"][['duplex', 'output', 'input'].index(kind)], stream)
 
     with stream:
         try:
@@ -1670,8 +1684,8 @@ def _main(argv=None):
     print("\tFrames processed: %d ( %.3fs )"
           % (stream.frame_count, stream.frame_count / float(stream.samplerate)))
     print('''\
-\txruns (under/over): input {0.inputUnderflows}/{0.inputOverflows}
-\txruns (under/over): output {0.outputUnderflows}/{0.outputOverflows}'''
+\tinput xruns (under/over): {0.inputUnderflows}/{0.inputOverflows}
+\toutput runs (under/over): {0.outputUnderflows}/{0.outputOverflows}'''
           .format(stream._cstream))
 
     return 0
