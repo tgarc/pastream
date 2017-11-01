@@ -1,9 +1,10 @@
 include LICENSE
 include CHANGELOG.rst
 include README.rst
-include examples/*.py
 include src/*.c src/*.h
 include build_pastream.py
+include test_pastream.py
 include portaudio/include/portaudio.h portaudio/src/common/pa_ringbuffer.h portaudio/src/common/pa_memorybarrier.h
-include docs/*.rst docs/Makefile docs/*.bat docs/*.py 
+include docs/*.rst docs/Makefile docs/*.bat docs/conf.py 
+recursive-include examples *.py
 recursive-include docs/_static docs/_template

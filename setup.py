@@ -11,6 +11,8 @@ for line in open(os.path.join(dirname, 'src', 'pastream.py')):
         exec(line)
         break
 
+test_deps = ['pytest>=3.0', 'numpy']
+
 setup(name='pastream',
       version=__version__,
       package_dir={'': 'src'},
@@ -31,8 +33,9 @@ setup(name='pastream',
           'soundfile>=0.9.0',
           'sounddevice>=0.3.9',
       ],
-      tests_require=['pytest>=3.0', 'numpy'],
+      tests_require=test_deps,
       extras_require={
+          'tests': test_deps,
           'examples': ['numpy', 'matplotlib'],
           'docs': ['sphinx', 'sphinx_rtd_theme', 'rst2pdf', 'sphinx-argparse']
       },
