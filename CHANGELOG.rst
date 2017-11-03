@@ -1,6 +1,19 @@
 Release Notes
 =============
 
+0.1.1:
+
+  * minor fixes to docs and cli
+
+  * (c533a) add 'mode' argument to `to_file`
+    
+  * (c533a) defer numpy import to improve total import time (as well
+    as the launch time of the pastream cli app)
+
+  * (df4bc3) add tone generator example to README
+
+  * (df4bc3) bump sounddevice req up to 0.3.9 to get improved import times
+    
 0.1.0:
   * (c70bda) Dropped SoundFileStream classes. This functionality is now
     integrated into the regular stream classes.
