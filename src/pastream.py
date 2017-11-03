@@ -618,7 +618,7 @@ class Stream(_sd._StreamBase):
             else:
                 name = tuple(_sd.query_devices(d)['name'] for d in self.device)
         except TypeError:
-            name = self.device
+            name = "'%s'" % _sd.query_devices(self.device)['name']
         try:
             if self.channels[0] != self.channels[1]:
                 channels = self.channels
