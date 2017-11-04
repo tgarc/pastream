@@ -18,15 +18,18 @@ PREAMBLESIZE = 4096
 
 # Set up the platform specific device
 if platform.system() == 'Windows':
-    DEVICE_KWARGS = { 'device': 'ASIO4ALL v2, ASIO', 'dtype': 'int24',
-                      'channels': 8, 'samplerate': 48000 }
+    DEVICE_KWARGS = { 'device': 'ASIO4ALL v2, ASIO', 'dtype': 'int32' }
 elif platform.system() == 'Darwin':
     raise Exception("Currently no test support for OSX")
 else:
     # This is assuming you're using the ALSA device set up by .asoundrc config
     # file in the root of the repository
-    DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32', 'channels':
-                      2, 'samplerate': 48000 }
+    DEVICE_KWARGS = { 'device': 'aloop_duplex', 'dtype': 'int32' }
+
+defaults = sd.query_devices(DEVICE_KWARGS['device'])
+channels = min(defaults['max_input_channels'], defaults['max_output_channels'])
+DEVICE_KWARGS.setdefault('channels', channels)
+DEVICE_KWARGS.setdefault('samplerate', defaults['default_samplerate'])
 
 if 'SOUNDDEVICE_DEVICE_NAME' in os.environ:
     DEVICE_KWARGS['device'] = os.environ['SOUNDDEVICE_DEVICE_NAME']
@@ -79,6 +82,14 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
           % (mframes, len(inp_fh), delay, len(inp_fh) - inp_fh.tell()))
 
 def randstream(preamblesize, channels, samplesize, dtype='int32', state=None):
+    """
+    Generates a uniformly random integer signal ranging between the minimum
+    and maximum possible values as defined by `samplesize`. The random signal
+    is preceded by a constant level equal to the maximum positive integer
+    value for `preamblesize` samples which can be used in testing to find the
+    beginning of a recording.
+
+    """    
     shift = 8 * (4 - samplesize)
     minval = -(PREAMBLE + 1 >> shift)
     maxval =   PREAMBLE     >> shift
@@ -112,7 +123,7 @@ def looper(stream, maxframes, **kwargs):
             time.sleep(stream.latency[1])
 
     # Generate a seed from which we can generate a common random stream
-    seed = np.random.randint(0, 1 << 32, dtype='int')
+    seed = np.random.randint(0, (1 << 31) - 1, dtype='int')
     state1 = np.random.RandomState(seed)
     state2 = np.random.RandomState(seed)
 
@@ -142,7 +153,7 @@ def looper(stream, maxframes, **kwargs):
             outframes = outframes[offset:]
             break
 
-    assert offset != -1, "Preamble not found"
+    assert offset >= 0, "Preamble not found"
 
     # Read until we finish receiving the preamble
     readframes = 0
@@ -165,52 +176,27 @@ def looper(stream, maxframes, **kwargs):
         mframes += len(outframes)
         outframes = frombuffer(next(chunkgen))
 
-def gen_random(nseconds, samplerate, channels, samplesize):
-    """
-    Generates a uniformly random integer signal ranging between the
-    minimum and maximum possible values as defined by `samplesize`. The random
-    signal is preceded by a constant level equal to the maximum positive
-    integer value for 100ms or N=sampling_rate/10 samples (the 'preamble')
-    which can be used in testing to find the beginning of a recording.
-
-    nseconds - how many seconds of data to generate
-    samplesize - size of each element (single sample of a single frame) in bytes
-    """
-    shift = 8*(4-samplesize)
-    minval = -(0x80000000>>shift)
-    maxval = 0x7FFFFFFF>>shift
-
-    preamble = np.zeros((samplerate//10, channels), dtype=np.int32)
-    preamble[:] = (PREAMBLE >> shift) << shift
-    yield preamble
-
-    for i in range(nseconds):
-        # sequential pattern for debugging
-        # pattern = np.arange(i*samplerate*channels,
-        #                     (i+1)*samplerate*channels)\
-        #                     .reshape(samplerate, channels) << shift
-        pattern = np.random.randint(minval, maxval+1, (samplerate, channels)) << shift
-        yield pattern.astype(np.int32)
-
 @pytest.fixture
 def random_soundfile_input(tmpdir, scope='session'):
     elementsize = _dtype2elementsize[DEVICE_KWARGS['dtype']]
+    dtype = DEVICE_KWARGS['dtype']
+    samplerate = int(DEVICE_KWARGS['samplerate'])
 
     # we don't use an actual TemporaryFile because they don't support multiple
     # file handles on windows
     rdmf= open(tempfile.mktemp(dir=str(tmpdir)), 'w+b')
     rdm_fh = sf.SoundFile(rdmf, 'w+',
-                          DEVICE_KWARGS['samplerate'],
+                          samplerate,
                           DEVICE_KWARGS['channels'],
                           'PCM_'+['8','16','24','32'][elementsize-1],
                           format='wav')
 
     with rdm_fh:
-        for blk in gen_random(1, rdm_fh.samplerate, rdm_fh.channels, elementsize):
-            rdm_fh.write(blk)
+        blocks = randstream(PREAMBLESIZE, rdm_fh.channels, elementsize, dtype)
+        rdm_fh.write(next(blocks))
+        rdm_fh.write(blocks.send(samplerate))
         rdm_fh.seek(0)
-
-        dtype = DEVICE_KWARGS['dtype']
+        
         if DEVICE_KWARGS['dtype'] == 'int24':
             # Tell the OS it's a 32-bit stream and ignore the extra zeros
             # because 24 bit streams are annoying to deal with
@@ -247,18 +233,22 @@ def test_soundfilestream_loopback(random_soundfile_input, devargs):
     assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype)
 
 def test_stdin_stdout_loopback(random_soundfile_input, devargs):
+    try:
+        from shlex import quote as shlex_quote
+    except ImportError:
+        from pipes import quote as shlex_quote
+
     inp_fh, preamble, dtype = random_soundfile_input
 
-    devargs['dtype'] = dtype
-
     inp_fh.name.seek(0)
 
-    proc = subprocess.Popen(('pastream - - -t au -D %s -f=int32' % devargs['device']).split(),
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    stdout = io.BytesIO(proc.communicate(inp_fh.name.read())[0])
+    proc = subprocess.Popen(('pastream', '-', '-', '-t', 'au', '-f', dtype, '-D', 
+        shlex_quote(devargs['device'])), stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    stdout = proc.communicate(inp_fh.name.read())[0]
+    assert proc.returncode == 0
 
     inp_fh.name.seek(0)
-    with sf.SoundFile(stdout) as out_fh:
+    with io.BytesIO(stdout) as stdoutf, sf.SoundFile(stdoutf) as out_fh:
         assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype)
 
 def test_offset(random_soundfile_input, devargs):
