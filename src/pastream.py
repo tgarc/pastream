@@ -44,10 +44,12 @@ _PA_BUFFERSIZE = 1 << 16
 _FILECHUNKSIZE = 4096
 
 # Private states that determine how a stream completed
-_FINISHED = 1
-_ABORTED = 2
-_STOPPED = 4
-_INITIALIZED = 8
+_STARTED        = 0
+_FINISHED       = 1
+_ABORTED        = 2
+_STOPPED        = 4
+_INITIALIZED    = 8
+_CLOSED         = 16
 
 # Include xrun flags in nampespace
 paInputOverflow = _lib.paInputOverflow
@@ -241,7 +243,6 @@ class Stream(_sd._StreamBase):
 
         # Set up reader/writer threads
         self._rxthread = self._txthread = None
-        self._txthread_args = self._rxthread_args = None
 
         # TODO: add support for C finished_callback function pointer
         self.__finished_callback = kwargs.pop('finished_callback', lambda x: None)
@@ -281,30 +282,6 @@ class Stream(_sd._StreamBase):
             self._cstream.txElementSize = self.samplesize[1] * self.channels[1]
         elif kind == 'output':
             self._cstream.txElementSize = self.samplesize * self.channels
-
-    def __stopiothreads(self):
-        # !This function is *not* thread safe!
-        currthread = _threading.current_thread()
-        if self._rxthread is not None and self._rxthread.is_alive() \
-           and self._rxthread != currthread:
-            self._rxthread.join()
-        if self._txthread is not None and self._txthread.is_alive() \
-           and self._txthread != currthread:
-            self._txthread.join()
-
-    # TODO: add ability to re-enter rwfunc without having to recreate the thread
-    def _readwritewrapper(self, rwfunc, *args, **kwargs):
-        """\
-        Wrapper for the reader and writer functions which acts as a kind
-        of context manager.
-
-        """
-        try:
-            rwfunc(self, *args, **kwargs)
-        except:
-            # Defer the exception and delegate to the owner thread
-            self._set_exception()
-            self.abort()
 
     def _reraise_exceptions(self):
         """\
@@ -418,9 +395,7 @@ class Stream(_sd._StreamBase):
             if self.__state == 0:
                 self.__statecond.wait(timeout)
                 if self.__state:
-                    # make sure any reader/writer threads are done before returning!
-                    # TODO: need to think this through for corner cases...
-                    self.__stopiothreads()
+                    self.__readywait()
                 self._reraise_exceptions()
             return self.__state > 0
 
@@ -524,31 +499,43 @@ class Stream(_sd._StreamBase):
         if self.__state != _INITIALIZED and not self.stopped:
             super(Stream, self).stop()
 
-        # Reset stream state machine
-        with self.__statecond:
-            self.__state = 0
-
         # Reset cstream info
         _lib.reset_stream(self._cstream)
 
-        # Recreate the necessary threads
-        if self._rxthread_args is not None:
-            target, args, kwargs = self._rxthread_args
-            self._rxthread = _threading.Thread(target=self._readwritewrapper,
-                                               args=(target,) + args,
-                                               kwargs=kwargs)
-            self._rxthread.daemon = True
-        else:
-            self._rxthread = None
+        # Reset stream state machine
+        with self.__statecond:
+            self.__state = _STARTED
+            self.__statecond.notify_all()
 
-        if self._txthread_args is not None:
-            target, args, kwargs = self._txthread_args
-            self._txthread = _threading.Thread(target=self._readwritewrapper,
-                                               args=(target,) + args,
-                                               kwargs=kwargs)
-            self._txthread.daemon = True
-        else:
-            self._txthread = None
+    def _readwritewrapper(self, rwfunc, ready, *args, **kwargs):
+        """\
+        Wrapper for the reader and writer functions which acts as a kind
+        of context manager.
+
+        """
+        thread = _threading.current_thread()
+        istx = self._txthread is thread
+        isrx = not istx
+        while True:
+            ready.set()
+            with self.__statecond:
+                self.__statecond.wait()
+
+            if self.closed \
+               or (istx and self._txthread is not thread) \
+               or (isrx and self._rxthread is not thread):
+                break
+
+            if self.__state == 0:
+                ready.clear()
+                try:
+                    rwfunc(self, *args, **kwargs)
+                except:
+                    # Defer the exception and delegate to the owner thread
+                    self._set_exception()
+                    self.abort()
+                    break
+        ready.set()
 
     # start is *not* thread safe! shouldn't have multiple callers anyway
     def start(self, prebuffer=True):
@@ -564,7 +551,6 @@ class Stream(_sd._StreamBase):
         """
         self._prepare()
         if self._txthread is not None:
-            self._txthread.start()
             txbuffer = self._cstream.txbuffer
             prebuffer = int(prebuffer)
             while _lib.PaUtil_GetRingBufferReadAvailable(txbuffer) < prebuffer\
@@ -575,13 +561,21 @@ class Stream(_sd._StreamBase):
         super(Stream, self).start()
 
         if self._rxthread is not None:
-            self._rxthread.start()
             self._reraise_exceptions()
+
+    def __readywait(self):
+        currthread = _threading.current_thread()
+        if self._rxthread is not None and self._rxthread.is_alive() \
+            and self._rxthread is not currthread and not self._rxthread.ready.is_set():
+            self._rxthread.ready.wait()
+        if self._txthread is not None and self._txthread.is_alive() \
+           and self._txthread is not currthread and not self._txthread.ready.is_set():
+            self._txthread.ready.wait()
 
     def stop(self):
         with self.__streamlock:
             super(Stream, self).stop()
-        self.__stopiothreads()
+        self.__readywait()
         self._reraise_exceptions()
 
     def abort(self):
@@ -589,7 +583,7 @@ class Stream(_sd._StreamBase):
             self.__aborting = True
         with self.__streamlock:
             super(Stream, self).abort()
-        self.__stopiothreads()
+        self.__readywait()
         self._reraise_exceptions()
 
     def close(self):
@@ -601,13 +595,28 @@ class Stream(_sd._StreamBase):
                 self.__aborting = True
             with self.__streamlock:
                 super(Stream, self).abort()
-        self.__stopiothreads()
+            self.__readywait()
+
         with self.__streamlock:
             super(Stream, self).close()
 
+        self.__readywait()
+        with self.__statecond:
+            self.__state |= _CLOSED
+            self.__statecond.notify_all()
+
+        # Join threads
+        currthread = _threading.current_thread()
+        if self._rxthread is not None and self._rxthread.is_alive() \
+           and self._rxthread is not currthread:
+            self._rxthread.join()
+        if self._txthread is not None and self._txthread.is_alive() \
+           and self._txthread is not currthread:
+            self._txthread.join()
+
         # Drop references to any buffers and external objects
-        self._txthread_args = self._rxthread_args = None
         self._rxbuffer = self._txbuffer = None
+        self._rxthread = self._txthread = None
 
         self._reraise_exceptions()
 
@@ -714,11 +723,17 @@ class _OutputStreamMixin(object):
             # Assume the writer will take care of looping
             self._cstream.loop = 0
             kwargs['loop'] = loop
-            self._txthread_args = writer, (buffer,) + args, kwargs
+            ready = _threading.Event()
+            self._txthread = _threading.Thread(target=self._readwritewrapper,
+                                               args=(writer, ready, buffer) + args,
+                                               kwargs=kwargs)
+            self._txthread.daemon = True
+            self._txthread.ready = ready
+            self._txthread.start()
         else:
             self._cstream.loop = loop
             # null out any thread that was previously set
-            self._txthread_args = None
+            self._txthread = None
 
         self._cstream.txbuffer = _ffi.cast('PaUtilRingBuffer*', buffer._ptr)
         self._txbuffer = buffer
@@ -750,7 +765,10 @@ class _OutputStreamMixin(object):
         # Null out any rx thread or rx buffer pointer but note that we
         # intentionally do not clear the _rxbuffer in case that memory could be
         # used again
-        self._rxthread_args = None
+        self._rxthread = None
+
+        # this could cause issues if the stream is active and accessing the
+        # buffer while the gc free's the xbuffer
         self._cstream.rxbuffer = _ffi.NULL
 
         self.set_source(playback, buffersize, loop)
@@ -893,10 +911,16 @@ class _InputStreamMixin(object):
             else:
                 buffer.flush()
 
-            self._rxthread_args = reader, (buffer,) + args, kwargs
+            ready = _threading.Event()
+            self._rxthread = _threading.Thread(target=self._readwritewrapper,
+                                               args=(reader, ready, buffer) + args,
+                                               kwargs=kwargs)
+            self._rxthread.daemon = True
+            self._rxthread.ready = ready
+            self._rxthread.start()
         else:
             # null out any thread that was previously set
-            self._rxthread_args = None
+            self._rxthread = None
 
         self._cstream.rxbuffer = _ffi.cast('PaUtilRingBuffer*', buffer._ptr)
         self._rxbuffer = buffer
@@ -941,7 +965,7 @@ class _InputStreamMixin(object):
             raise ValueError("atleast_2d is only supported with numpy arrays")
 
         # Null out any previously set tx buffer/threads (see comment in play())
-        self._txthread_args = None
+        self._txthread = None
         self._cstream.txbuffer = _ffi.NULL
 
         capture = self.set_sink(out, buffersize)
@@ -1064,10 +1088,10 @@ class _InputStreamMixin(object):
         self._rxbuffer = rxbuffer
 
         # Clear any previous receive thread
-        self._rxthread_args = None
+        self._rxthread = None
 
         if playback is None:
-            self._txthread_args = None
+            self._txthread = None
             self._cstream.txbuffer = _ffi.NULL
         elif not self.isduplex:
             raise ValueError("playback not supported; this stream is input only")

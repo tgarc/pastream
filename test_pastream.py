@@ -113,6 +113,7 @@ def looper(stream, maxframes, **kwargs):
     dtype = stream.dtype
 
     def writer(stream, ringbuff, rblockgen, loop=False):
+        print("annnnd we're in.")
         ringbuff.write(next(rblockgen))
         while not stream.finished:
             frames = ringbuff.write_available
