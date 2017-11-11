@@ -1623,7 +1623,7 @@ Sample endianness. Must be one of {%s}.''' % ', '.join(['null'] + ['file', 'big'
 
 
 def _main(argv=None):
-    import os, traceback
+    import os, traceback, codecs
 
     if argv is None:
         argv = _sys.argv[1:]
@@ -1657,12 +1657,17 @@ def _main(argv=None):
         parser.exit(255)
 
     if args.output == '-' or args.quiet:
-        _sys.stdout = open(os.devnull, 'w')
+        stdout = open(os.devnull, 'w')
+    else:
+        stdout = _sys.stdout
+
+    # Replace any characters that aren't printable to the user terminal
+    stdout = codecs.getwriter(stdout.encoding or 'utf-8')(stdout, 'replace')
 
     statline = "\r   {:02.0f}:{:02.0f}:{:02.2f}s ({:d} xruns, {:6.2f}% load)\r"
-    print("<-", 'null' if playback is None else playback)
-    print("--", stream)
-    print("->", 'null' if record is None else record)
+    print("<-", 'null' if playback is None else playback, file=stdout)
+    print("--", stream, file=stdout)
+    print("->", 'null' if record is None else record, file=stdout)
 
     with stream:
         try:
@@ -1673,20 +1678,21 @@ def _main(argv=None):
                 line = statline.format(dt // 3600, dt % 3600 // 60, dt % 60,
                                        stream.xruns,
                                        100 * stream.cpu_load)
-                _sys.stdout.write(line); _sys.stdout.flush()
+                stdout.write(line); stdout.flush()
                 _time.sleep(0.12)
         except KeyboardInterrupt:
             stream.stop()
         finally:
             print()
 
-    print("Callback info:")
+    print("Callback info:", file=stdout)
     print("\tFrames processed: %d ( %.3fs )"
-          % (stream.frame_count, stream.frame_count / float(stream.samplerate)))
+          % (stream.frame_count, stream.frame_count / float(stream.samplerate)),
+          file=stdout)
     print('''\
 \tinput xruns (under/over): {0.inputUnderflows}/{0.inputOverflows}
 \toutput runs (under/over): {0.outputUnderflows}/{0.outputOverflows}'''
-          .format(stream._cstream))
+          .format(stream._cstream), file=stdout)
 
     return 0
 
