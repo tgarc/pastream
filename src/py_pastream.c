@@ -47,13 +47,7 @@ int callback(
     long long frames = stream->frames;
     long pad = stream->pad;
 
-    // for testing only
-    if ( g_wiremode )
-        in_data = out_data;
-
     if ( status & 0xF ) {
-        stream->status |= status;
-        stream->xruns++;
         if ( status & paInputUnderflow )
             stream->inputUnderflows++;
         if ( status & paInputOverflow )
@@ -62,7 +56,13 @@ int callback(
             stream->outputUnderflows++;
         if ( status & paOutputOverflow )
             stream->outputOverflows++;
+        stream->xruns++;
+        stream->status |= status;
     }
+
+    // for testing only
+    if ( g_wiremode )
+        in_data = out_data;
 
     if ( frames >= 0 ) {
         // exit point (1 of 2)
