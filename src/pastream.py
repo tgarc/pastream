@@ -137,11 +137,12 @@ def _soundfilerecorder(stream, rxbuffer, inp_fh):
     if sleeptime > 0:
         _time.sleep(sleeptime)
 
-    chunksize = min(_FILECHUNKSIZE, len(rxbuffer))
+    chunksize = max(_FILECHUNKSIZE, int(round(latency * stream.samplerate)))
+    chunksize = min(len(rxbuffer), chunksize)
     while not stream.aborted:
         # for thread safety, check the stream is active *before* reading
         active = stream.active
-        frames = rxbuffer.read_available
+        frames = min(chunksize, rxbuffer.read_available)
         if frames == 0:
             # we've read everything and the stream is done; seeya!
             if not active: break
@@ -156,6 +157,7 @@ def _soundfilerecorder(stream, rxbuffer, inp_fh):
             inp_fh.buffer_write(buffregn2, dtype=dtype)
         rxbuffer.advance_read_index(frames)
 
+        # Wait until we have at least chunksize frames available again
         sleeptime = (chunksize - rxbuffer.read_available) / stream.samplerate
         if sleeptime > 0:
             _time.sleep(sleeptime)
@@ -164,16 +166,19 @@ def _soundfilerecorder(stream, rxbuffer, inp_fh):
 # Default handler for reading input from a SoundFile object and
 # writing it to a Stream
 def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
-    if stream.isduplex:
+    try:
+        latency = stream.latency[1]
         dtype = stream.dtype[1]
-    else:
+    except TypeError:
+        latency = stream.latency
         dtype = stream.dtype
 
     readinto = out_fh.buffer_read_into
-    chunksize = min(_FILECHUNKSIZE, len(txbuffer))
+    chunksize = max(_FILECHUNKSIZE, int(round(latency * stream.samplerate)))
+    chunksize = min(len(txbuffer), chunksize)
     while not stream.finished:
-        frames = txbuffer.write_available
-        if not frames:
+        frames = min(chunksize, txbuffer.write_available)
+        if frames == 0:
             stream._wmisses += 1
             _time.sleep(0.0025)
             continue
@@ -199,10 +204,9 @@ def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
         if readframes < frames:
             break
 
-        sleeptime = (chunksize - txbuffer.write_available) / stream.samplerate
-        if sleeptime > 0:
-            _time.sleep(sleeptime)
-
+        # Wait a period unless the buffer is dangerously low
+        if txbuffer.read_available >= chunksize:
+            _time.sleep(chunksize / stream.samplerate)
 
 # TODO?: add option to do asynchronous exception raising
 class Stream(_sd._StreamBase):
@@ -572,7 +576,8 @@ class Stream(_sd._StreamBase):
                 _time.sleep(0.0025)
             self._reraise_exceptions()
 
-        super(Stream, self).start()
+        with self.__streamlock:
+            super(Stream, self).start()
 
         if self._rxthread is not None:
             self._rxthread.start()
@@ -601,7 +606,9 @@ class Stream(_sd._StreamBase):
                 self.__aborting = True
             with self.__streamlock:
                 super(Stream, self).abort()
+
         self.__stopiothreads()
+
         with self.__streamlock:
             super(Stream, self).close()
 
@@ -1553,6 +1560,9 @@ default), then streaming will continue until there is no playback data
 remaining or, if no playback was given, recording will continue
 indefinitely.''')
 
+    propts.add_argument("--fatal-xruns", action='store_true',
+        help="Exit with an error if any xruns are reported.")
+
     propts.add_argument("-o", "--offset", type=posframestype, default=0,
         help='''\
 Drop a number of frames from the start of a recording.''')
@@ -1679,11 +1689,20 @@ def _main(argv=None):
                                        stream.xruns,
                                        100 * stream.cpu_load)
                 stdout.write(line); stdout.flush()
+                if args.fatal_xruns and stream.status & 0xF:
+                    # I've seen some really odd hanging behavior in older
+                    # versions of portaudio using pulseaudio devices with
+                    # abort(); stop() seems not to cause the same issues though
+                    stream.stop()
+                    break
                 _time.sleep(0.12)
         except KeyboardInterrupt:
             stream.stop()
         finally:
-            print()
+            print(file=stdout)
+
+        if args.fatal_xruns and stream.xruns:
+            print("ERROR: xruns detected: Aborted", file=_sys.stderr)
 
     print("Callback info:", file=stdout)
     print("\tFrames processed: %d ( %.3fs )"
