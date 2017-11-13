@@ -105,7 +105,7 @@ class _LinearBuffer(RingBuffer):
             # This is a power of 2 buffer so just create a regular RingBuffer
             return RingBuffer(elementsize, buffer=data)
 
-        self = super(_LinearBuffer, cls).__new__(cls, elementsize, buffer)
+        self = super(_LinearBuffer, cls).__new__(cls)
         self._data = data
         self._ptr = _ffi.new('PaUtilRingBuffer*')
 
@@ -639,6 +639,10 @@ class Stream(_sd._StreamBase):
             dtype = self.dtype[0]
         else:
             dtype = self.dtype
+
+	if _sys.version_info.major < 3:
+	    name = name.encode('utf-8', 'replace')
+
         return ("{0.__name__}({1}, samplerate={2._samplerate:.0f}, "
                 "channels={3}, dtype='{4}', blocksize={2._blocksize})").format(
             self.__class__, name, self, channels, dtype)
@@ -1633,7 +1637,7 @@ Sample endianness. Must be one of {%s}.''' % ', '.join(['null'] + ['file', 'big'
 
 
 def _main(argv=None):
-    import os, traceback, codecs
+    import os, traceback
 
     if argv is None:
         argv = _sys.argv[1:]
@@ -1670,9 +1674,6 @@ def _main(argv=None):
         stdout = open(os.devnull, 'w')
     else:
         stdout = _sys.stdout
-
-    # Replace any characters that aren't printable to the user terminal
-    stdout = codecs.getwriter(stdout.encoding or 'utf-8')(stdout, 'replace')
 
     statline = "\r   {:02.0f}:{:02.0f}:{:02.2f}s ({:d} xruns, {:6.2f}% load)\r"
     print("<-", 'null' if playback is None else playback, file=stdout)
