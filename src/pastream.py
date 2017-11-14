@@ -34,6 +34,10 @@ from _py_pastream import ffi as _ffi, lib as _lib
 from pa_ringbuffer import _RingBufferBase
 
 
+# For debugging
+## from timeit import default_timer as timer
+## gtime = None
+
 __version__ = '0.1.1'
 
 
@@ -42,6 +46,7 @@ _PA_BUFFERSIZE = 1 << 16
 
 # Determines the blocksize for reading/writing sound files
 _FILECHUNKSIZE = 4096
+_MAXCHUNKSIZE = 1 << 18
 
 # Private states that determine how a stream completed
 _FINISHED = 1
@@ -123,6 +128,11 @@ class _LinearBuffer(RingBuffer):
         pass
 
 
+# Round up to the closest multiple of unit
+def _unitceil(x, unit):
+    return unit * ((x + unit - 1) // unit)
+
+
 # Default handler for writing input from a Stream to a SoundFile object
 def _soundfilerecorder(stream, rxbuffer, inp_fh):
     try:
@@ -132,35 +142,42 @@ def _soundfilerecorder(stream, rxbuffer, inp_fh):
         latency = stream.latency
         dtype = stream.dtype
 
-    sleeptime = latency - (rxbuffer.read_available - stream._offset)\
-        / stream.samplerate
+    ## global gtime
+
+    periodsize = max(int(round(latency * stream.samplerate)), stream.blocksize)
+    maxframes = _MAXCHUNKSIZE // rxbuffer.elementsize
+
+    # Set chunksize to a multiple of _FILECHUNKSIZE
+    chunksize = _unitceil(periodsize + _FILECHUNKSIZE, periodsize)
+    chunksize = min(len(rxbuffer), maxframes, chunksize)
+
+    sleeptime = (chunksize - rxbuffer.read_available + stream._offset) / stream.samplerate
     if sleeptime > 0:
         _time.sleep(sleeptime)
 
-    chunksize = max(_FILECHUNKSIZE, int(round(latency * stream.samplerate)))
-    chunksize = min(len(rxbuffer), chunksize)
+    sleeptime = max(chunksize - periodsize // 8, periodsize) / stream.samplerate
+    ## _sys.stderr.write('r:%d r:%d ' % (periodsize, max(chunksize - periodsize // 8, periodsize)))
     while not stream.aborted:
         # for thread safety, check the stream is active *before* reading
         active = stream.active
-        frames = min(chunksize, rxbuffer.read_available)
+        frames = min(rxbuffer.read_available, maxframes)
         if frames == 0:
             # we've read everything and the stream is done; seeya!
-            if not active: break
-            # we're reading too fast, wait for a buffer write
-            stream._rmisses += 1
-            _time.sleep(0.0025)
-            continue
+            if not active:
+                break
+            ## stream._rmisses += 1
+            ## _time.sleep(latency)
+            ## continue
+
+        ## print('1', timer() - gtime, frames)
 
         frames, buffregn1, buffregn2 = rxbuffer.get_read_buffers(frames)
         inp_fh.buffer_write(buffregn1, dtype=dtype)
         if len(buffregn2):
             inp_fh.buffer_write(buffregn2, dtype=dtype)
-        rxbuffer.advance_read_index(frames)
 
-        # Wait until we have at least chunksize frames available again
-        sleeptime = (chunksize - rxbuffer.read_available) / stream.samplerate
-        if sleeptime > 0:
-            _time.sleep(sleeptime)
+        rxbuffer.advance_read_index(frames)
+        _time.sleep(sleeptime)
 
 
 # Default handler for reading input from a SoundFile object and
@@ -173,17 +190,26 @@ def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
         latency = stream.latency
         dtype = stream.dtype
 
-    readinto = out_fh.buffer_read_into
-    chunksize = max(_FILECHUNKSIZE, int(round(latency * stream.samplerate)))
-    chunksize = min(len(txbuffer), chunksize)
-    while not stream.finished:
-        frames = min(chunksize, txbuffer.write_available)
-        if frames == 0:
-            stream._wmisses += 1
-            _time.sleep(0.0025)
-            continue
+    ## global gtime
 
-        frames, buffregn1, buffregn2 = txbuffer.get_write_buffers(frames)
+    periodsize = max(int(round(latency * stream.samplerate)), stream.blocksize)
+    maxframes = _MAXCHUNKSIZE // txbuffer.elementsize
+
+    # Set chunksize to a multiple of _FILECHUNKSIZE
+    chunksize = _unitceil(periodsize + _FILECHUNKSIZE, periodsize)
+    chunksize = min(len(txbuffer), maxframes, chunksize)
+    sleeptime = max(chunksize - periodsize // 8, periodsize) / stream.samplerate
+
+    readinto = out_fh.buffer_read_into
+    ## _sys.stderr.write('w:%d w:%d ' % (periodsize, max(chunksize - periodsize // 8, periodsize)))
+    while not stream.finished:
+        frames = min(txbuffer.write_available, maxframes)
+
+        ## if frames == 0:
+        ##    stream._wmisses += 1
+        ## print('0', timer() - gtime, frames)
+
+        frames, buffregn1, buffregn2 = txbuffer.get_write_buffers(txbuffer.write_available)
         readframes = readinto(buffregn1, dtype=dtype)
         if len(buffregn2):
             readframes += readinto(buffregn2, dtype=dtype)
@@ -204,9 +230,8 @@ def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
         if readframes < frames:
             break
 
-        # Wait a period unless the buffer is dangerously low
-        if txbuffer.read_available >= chunksize:
-            _time.sleep(chunksize / stream.samplerate)
+        _time.sleep(sleeptime)
+
 
 # TODO?: add option to do asynchronous exception raising
 class Stream(_sd._StreamBase):
@@ -278,7 +303,7 @@ class Stream(_sd._StreamBase):
             dtype=dtype, finished_callback=finished_callback, **kwargs)
 
         # DEBUG for measuring polling performance
-        self._rmisses = self._wmisses = 0
+        ## self._rmisses = self._wmisses = 0
 
         self._autoclose = False
         if kind == 'duplex':
@@ -567,6 +592,10 @@ class Stream(_sd._StreamBase):
             stream is not an output stream this has no effect.
         """
         self._prepare()
+
+        ## global gtime
+        ## gtime = timer()
+
         if self._txthread is not None:
             self._txthread.start()
             txbuffer = self._cstream.txbuffer
@@ -640,8 +669,8 @@ class Stream(_sd._StreamBase):
         else:
             dtype = self.dtype
 
-	if _sys.version_info.major < 3:
-	    name = name.encode('utf-8', 'replace')
+        if _sys.version_info.major < 3:
+            name = name.encode('utf-8', 'replace')
 
         return ("{0.__name__}({1}, samplerate={2._samplerate:.0f}, "
                 "channels={3}, dtype='{4}', blocksize={2._blocksize})").format(
@@ -1047,6 +1076,7 @@ class _InputStreamMixin(object):
         if atleast_2d and (numpy is None or not isinstance(out, numpy.ndarray)):
             raise ValueError("atleast_2d is only supported with numpy arrays")
 
+        periodsize = int(round(latency * self.samplerate))
         varsize = False
         if not chunksize:
             if self.blocksize:
@@ -1056,7 +1086,7 @@ class _InputStreamMixin(object):
                     "Using overlap requires a non-zero chunksize or stream blocksize")
             else:
                 varsize = True
-                chunksize = int(round(latency * self.samplerate))
+                chunksize = periodsize
 
         if overlap >= chunksize:
             raise ValueError(
@@ -1117,9 +1147,9 @@ class _InputStreamMixin(object):
             rxbuffer.write(bytearray(overlap * elementsize))
 
         # DEBUG
-        # logf = open('chunks2.log', 'wt')
-        # print("delta sleep lag yield misses frames", file=logf)
-        # starttime = dt = rmisses = 0
+        ## logf = open('chunks2.log', 'wt')
+        ## print("delta sleep lag yield misses frames", file=logf)
+        ## starttime = dt = rmisses = 0
 
         wait_time = leadtime = 0
         done = False
@@ -1147,7 +1177,7 @@ class _InputStreamMixin(object):
                         done = True
                         if frames == 0: break
                     else:
-                        self._rmisses += 1
+                        ## self._rmisses += 1
                         _time.sleep(0.0025)
                         continue
                 elif wait_time:
@@ -1155,11 +1185,11 @@ class _InputStreamMixin(object):
                     wait_time = 0
 
                 # Debugging only
-                # print("{0:f} {1:f} {2:f} {3:f} {4} {5}".format(
-                #     1e3*(_time.time() - starttime), 1e3*sleeptime, 1e3*(self.time - lastTime),
-                #     1e3*dt, self._rmisses - rmisses, frames - chunksize), file=logf)
-                # rmisses = self._rmisses
-                # starttime = _time.time()
+                ## print("{0:f} {1:f} {2:f} {3:f} {4} {5}".format(
+                ##     1e3*(_time.time() - starttime), 1e3*sleeptime, 1e3*(self.time - lastTime),
+                ##     1e3*dt, self._rmisses - rmisses, frames - chunksize), file=logf)
+                ## rmisses = self._rmisses
+                ## starttime = _time.time()
 
                 frames, buffregn1, buffregn2 = rxbuffer.get_read_buffers(
                     frames if varsize else chunksize)
@@ -1183,8 +1213,9 @@ class _InputStreamMixin(object):
                         yield buffregn1
                     rxbuffer.advance_read_index(frames - overlap)
 
-                # # DEBUG
-                # dt = _time.time() - starttime
+                # DEBUG
+                ## print('1', timer() - gtime, rxbuffer.read_available)
+                ## dt = _time.time() - starttime
 
                 sleeptime = (chunksize - rxbuffer.read_available) / self.samplerate \
                     + self._cstream.lastTime.currentTime - self.time              \
@@ -1690,7 +1721,7 @@ def _main(argv=None):
                                        stream.xruns,
                                        100 * stream.cpu_load)
                 stdout.write(line); stdout.flush()
-                if args.fatal_xruns and stream.status & 0xF:
+                if args.fatal_xruns and stream.status:
                     # I've seen some really odd hanging behavior in older
                     # versions of portaudio using pulseaudio devices with
                     # abort(); stop() seems not to cause the same issues though
@@ -1713,6 +1744,8 @@ def _main(argv=None):
 \tinput xruns (under/over): {0.inputUnderflows}/{0.inputOverflows}
 \toutput runs (under/over): {0.outputUnderflows}/{0.outputOverflows}'''
           .format(stream._cstream), file=stdout)
+
+    ## print(stream._rmisses, stream._wmisses, file=_sys.stderr)
 
     return 0
 
