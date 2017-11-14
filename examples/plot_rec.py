@@ -64,7 +64,5 @@ with stream:
     inc = 0.9
 
     ani = animation.FuncAnimation(fig, draw, stream.chunks(playback=inpf, loop=True), blit=True, interval=0, repeat=False)
-    try:
-        plt.show(block=True)
-    finally:
-        print('xruns:', stream.xruns, 'misses:', stream._rmisses, stream._wmisses)
+    plt.show(block=True)
+
