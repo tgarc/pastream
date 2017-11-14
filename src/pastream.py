@@ -34,7 +34,7 @@ from _py_pastream import ffi as _ffi, lib as _lib
 from pa_ringbuffer import _RingBufferBase
 
 
-__version__ = '0.1.1'
+__version__ = '0.1.2rc1'
 
 
 # Set a default size for the audio callback ring buffer

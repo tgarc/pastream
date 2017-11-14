@@ -1,6 +1,12 @@
 Release Notes
 =============
 
+0.1.2:
+
+  * (dcf63) added --fatal-xruns option to automatically abort on detected xruns
+  
+  * (5a322) fixed encoding errors with non-ascii device names
+
 0.1.1:
 
   * minor fixes to docs and cli
