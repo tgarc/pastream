@@ -34,7 +34,7 @@ from _py_pastream import ffi as _ffi, lib as _lib
 from pa_ringbuffer import _RingBufferBase
 
 
-__version__ = '0.1.1'
+__version__ = '0.1.2rc2'
 
 
 # Set a default size for the audio callback ring buffer
@@ -640,8 +640,8 @@ class Stream(_sd._StreamBase):
         else:
             dtype = self.dtype
 
-	if _sys.version_info.major < 3:
-	    name = name.encode('utf-8', 'replace')
+        if _sys.version_info.major < 3:
+            name = name.encode('utf-8', 'replace')
 
         return ("{0.__name__}({1}, samplerate={2._samplerate:.0f}, "
                 "channels={3}, dtype='{4}', blocksize={2._blocksize})").format(
