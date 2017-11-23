@@ -21,7 +21,6 @@
 # import sys
 # sys.path.insert(0, '/home/tdos/dev/pastream')
 
-
 # -- General configuration ------------------------------------------------
 
 # If your documentation needs a minimal Sphinx version, state it here.
@@ -37,8 +36,19 @@ extensions = ['sphinx.ext.autodoc',
               'sphinx.ext.napoleon',
               'sphinx.ext.intersphinx',
               'sphinxarg.ext',
-              'rst2pdf.pdfbuilder'
 ]
+
+
+import sys
+if sys.version_info.major < 3:
+    try:
+        import rst2pdf
+    except ImportError:
+        pass
+    else:
+        del rst2pdf
+        extensions.append('rst2pdf.pdfbuilder')
+del sys    
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
