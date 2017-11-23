@@ -48,49 +48,55 @@ Reader/Writer Threads
     the main thread free for higher level management tasks.
 
 
-Dependencies
-============
-`cffi <https://cffi.readthedocs.io/en/latest/>`__
+External Dependencies
+=====================
 
-`sounddevice <http://github.com/spatialaudio/python-sounddevice>`__ (depends on `PortAudio <http://www.portaudio.com>`__)
+There are a few compiled libraries pastream requires which *may* need to be
+installed separately depending on your operating system. Windows users are
+luckiest, they can skip this section entirely.
 
-`soundfile <https://github.com/bastibe/PySoundFile>`__ (depends on `libsndfile <http://www.mega-nerd.com/libsndfile/>`__)
+`libffi <https://sourceware.org/libffi/>`__ (Linux/Unix/MacOSX):
+   Under Linux/Unix/MacOSX platforms you'll need to install the ffi
+   library. (For Windows users, ffi is already included with the python cffi
+   package.)  libffi is available through most package managers::
 
-(Optional) `numpy <http://www.numpy.org/>`__
+     $ yum install libffi-devel # Red-hat/CentOS Linux
+     $ apt-get install libffi-dev # Ubuntu/debian derivatives
+     $ brew install libffi # Homebrew on OSX
+
+   More information on installing ``libffi`` is available in the cffi
+   documentation `here
+   <https://cffi.readthedocs.io/en/latest/installation.html#platform-specific-instructions>`__.
+
+`PortAudio <http://www.portaudio.com>`__ and `libsndfile <http://www.mega-nerd.com/libsndfile/>`__ (Linux/Unix):
+   Linux and Unix users will also need to install a recent version of the
+   ``PortAudio`` and ``libsndfile`` libraries. (For Windows and OSX, the
+   sounddevice and soundfile python packages include prebuilt versions for
+   you.) You can either install the latest available from your package manager
+   (e.g. ``apt-get install libportaudio2 libsndfile`` for debian/raspbian) or
+   install the latest stable build from the package website (Recommended).
 
 
 Installation
 ============
-For linux platforms a recent version of the ``PortAudio`` and ``libsndfile`` C
-libraries are required. (For Windows and OSX, the sounddevice and soundfile
-packages include prebuilt versions for you). You can either install the latest
-available from your package manager (e.g. ``apt-get install libportaudio2
-libsndfile`` for debian/raspbian) or install the latest stable build from the
-package website (Recommended); see links in `Dependencies`_.
-
-pastream is now available on PyPI. Installation is as easy as::
+Once the above dependencies have been resolved, you can install pastream using
+pip::
 
     $ pip install pastream
 
 
 Building From Source
 =====================
-To compile from source under unix platforms, ``libffi`` is required. (For
-Windows, this is already included with ``cffi``). ``libffi`` is available
-through most package managers (e.g., ``yum install libffi-devel``, ``apt-get
-install libffi-dev``, ``brew install libffi``). More information on installing
-``libffi`` is available `here
-<https://cffi.readthedocs.io/en/latest/installation.html#platform-specific-instructions>`__.
-
-If doing a fresh checkout::
+Clone pastream with the ``--recursive`` flag::
 
     $ git clone --recursive http://github.com/tgarc/pastream
 
-If you already have a checkout::
+Or, if you already have a checkout::
 
+    $ cd <path/to/checkout>
     $ git submodule update --init
 
-Then do a pip install from your working copy::
+Finally, do a pip install from your local working copy::
 
     $ pip install <path/to/checkout>
 
@@ -98,21 +104,25 @@ Then do a pip install from your working copy::
 Building Documentation
 ======================
 Documentation for pastream can be easily generated in a wide variety of formats
-using Sphinx. Just follow the steps below.
+using Sphinx. Just follow the steps below. 
+
+.. Note:: 
+   The libraries listed in `External Dependencies`_ are required in order to
+   build documentation.
 
 Checkout the repository and cd into it::
 
-    $ git clone --recursive http://github.com/tgarc/pastream
+    $ git clone http://github.com/tgarc/pastream
     $ cd pastream
 
-Install documentation dependencies (while inside the repository root)
+Install documentation dependencies using requirements file::
 
-    $ pip install .[docs]
+    $ pip install -r docs/requirements.txt
 
-Then use the included makefile/make.bat to generate documentation. (Here we
+Then use the included Makefile/make.bat to generate documentation. (Here we
 output to the html format)::
 
-    $ cd pastream/docs
+    $ cd docs
     $ make html
 
 
