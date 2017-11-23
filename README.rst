@@ -98,16 +98,12 @@ Then do a pip install from your working copy::
 Building Documentation
 ======================
 Documentation for pastream can be easily generated in a wide variety of formats
-using Sphinx. Just follow the steps below.
+using Sphinx. Just follow the steps below. Note that this only works with
+python 2 ATM since rst2pdf does not yet officially support python 3.
 
-Checkout the repository and cd into it::
+Checkout the repository::
 
     $ git clone --recursive http://github.com/tgarc/pastream
-    $ cd pastream
-
-Install documentation dependencies (while inside the repository root)
-
-    $ pip install .[docs]
 
 Then use the included makefile/make.bat to generate documentation. (Here we
 output to the html format)::
