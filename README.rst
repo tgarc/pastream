@@ -17,6 +17,12 @@ box. Note that in addition to the pastream *library*, pastream includes a
 `command line application`_ for playing
 and recording audio files.
 
+Documentation:
+   http://pastream.readthedocs.io/
+
+Source code repository and issue tracker:
+   http://github.com/tgarc/pastream/
+
 
 Features
 ========
