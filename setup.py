@@ -37,7 +37,7 @@ setup(name='pastream',
       extras_require={
           'tests': test_deps,
           'examples': ['numpy', 'matplotlib'],
-          'docs': ['sphinx', 'sphinx_rtd_theme', 'sphinx-argparse']
+          'docs': open(os.path.join(dirname, 'docs', 'requirements.txt')).readlines(),
       },
       classifiers=[
           'License :: OSI Approved :: MIT License',

@@ -10,14 +10,15 @@
 .. include:: ../CHANGELOG.rst
 
 
-Command Line Reference
-==========================
+..
+   Command Line Reference
+   ==========================
 
-.. argparse::
-   :module: pastream
-   :func: _get_parser
-   :prog: pastream
-   :nodescription:
+   .. argparse::
+      :module: pastream
+      :func: _get_parser
+      :prog: pastream
+      :nodescription:
 
 
 API Reference

@@ -1,0 +1,4 @@
+sphinx>=1.3
+sphinx_rtd_theme
+#sphinx-argparse
+pa-ringbuffer>=0.1.2
