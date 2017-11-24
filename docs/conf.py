@@ -36,7 +36,7 @@ extensions = ['sphinx.ext.autodoc',
               'sphinx.ext.viewcode',
               'sphinx.ext.napoleon',
               'sphinx.ext.intersphinx',
-              'sphinxarg.ext',
+#              'sphinxarg.ext',
 ]
 
 
@@ -71,7 +71,13 @@ author = 'Thomas J. Garcia'
 # built documents.
 #
 import fake_pastream
+import fake_sounddevice
+import fake_soundfile
+import fake_cffi
 sys.modules['_py_pastream'] = sys.modules['fake_pastream']
+sys.modules['soundfile'] = sys.modules['fake_soundfile']
+sys.modules['sounddevice'] = sys.modules['fake_sounddevice']
+sys.modules['cffi'] = sys.modules['fake_cffi']
 
 # The short X.Y version.
 # version = pastream.__version__

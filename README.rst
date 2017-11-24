@@ -106,10 +106,6 @@ Building Documentation
 Documentation for pastream can be easily generated in a wide variety of formats
 using Sphinx. Just follow the steps below. 
 
-.. Note:: 
-   The libraries listed in `External Dependencies`_ are required in order to
-   build documentation.
-
 Checkout the repository and cd into it::
 
     $ git clone http://github.com/tgarc/pastream
