@@ -1,0 +1,2 @@
+cffi>=1.4.0
+pa_ringbuffer>=0.1.2

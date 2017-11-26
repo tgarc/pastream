@@ -3,8 +3,14 @@ include CHANGELOG.rst
 include README.rst
 include src/*.c src/*.h
 include build_pastream.py
-include test_pastream.py
 include portaudio/include/portaudio.h portaudio/src/common/pa_ringbuffer.h portaudio/src/common/pa_memorybarrier.h
-include docs/*.rst docs/Makefile docs/*.bat docs/*.py
+include setup-requirements.txt dev-requirements.txt
+include docs/requirements.txt docs/*.rst docs/Makefile docs/make.bat docs/*.py
+include etc/README.rst
+include examples/requirements.txt examples/README.rst
+include tests/requirements.txt
+recursive-include etc *.py *.m
+recursive-include tests *.py
 recursive-include examples *.py
-recursive-include docs/_static docs/_template
+recursive-include docs/_static
+recursive-include docs/_template
