@@ -1,6 +1,14 @@
 Release Notes
 =============
 
+0.1.2:
+
+  * (ba45a) improve file read/write efficiency
+
+  * (b7b7d) added --fatal-xruns option to automatically abort on detected xruns
+
+  * (5d7dc) fixed encoding errors with non-ascii device names
+
 0.1.1:
 
   * minor fixes to docs and cli
