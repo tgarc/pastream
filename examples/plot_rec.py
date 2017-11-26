@@ -14,17 +14,11 @@ __usage__ = "[device[ playback]]"
 
 update = 1536
 
-delay = [0]*25
-
 def draw(data):
-    global plotdata, rmisses, maxdelay, counter, lasttime
+    global plotdata
     xlim = list(ax.get_xlim())
 
-    # delay[counter%len(delay)] = stream._rxbuffer.read_available - len(data)
-    # counter += 1
-    # print(time.time() - lasttime, len(data), stream.rxbuff.read_available - len(data), max(delay), stream._rmisses - rmisses)
     lasttime = time.time()
-    rmisses = stream._rmisses
 
     plotdata = np.roll(plotdata, -len(data), axis=0)
     if not len(data): return line,
@@ -51,8 +45,6 @@ if inpf is not None:
 else:
     stream = ps.InputStream(dev, channels=1)
 
-lasttime = time.time()
-counter = maxdelay = rmisses = 0
 with stream:
     plotdata = np.zeros(10*update, dtype=stream.dtype)
 
@@ -65,4 +57,3 @@ with stream:
 
     ani = animation.FuncAnimation(fig, draw, stream.chunks(playback=inpf, loop=True), blit=True, interval=0, repeat=False)
     plt.show(block=True)
-

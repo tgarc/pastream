@@ -11,8 +11,6 @@ for line in open(os.path.join(dirname, 'src', 'pastream.py')):
         exec(line)
         break
 
-test_deps = ['pytest>=3.0', 'numpy']
-
 setup(name='pastream',
       version=__version__,
       package_dir={'': 'src'},
@@ -26,18 +24,16 @@ setup(name='pastream',
       long_description=open(os.path.join(dirname, 'README.rst')).read(),
       entry_points={'console_scripts': ['pastream = pastream:_main']},
       cffi_modules=["build_pastream.py:ffibuilder"],
-      setup_requires=['cffi>=1.4.0', 'pa_ringbuffer>=0.1.2'],
+      setup_requires=open(os.path.join(dirname, 'setup-requirements.txt')).readlines(),
       install_requires=[
           'pa_ringbuffer>=0.1.2',
           'cffi>=1.0.0',
           'soundfile>=0.9.0',
           'sounddevice>=0.3.9',
       ],
-      tests_require=test_deps,
+      tests_require=open(os.path.join(dirname, 'tests', 'requirements.txt')).readlines(),
       extras_require={
-          'tests': test_deps,
-          'examples': ['numpy', 'matplotlib'],
-          'docs': open(os.path.join(dirname, 'docs', 'requirements.txt')).readlines(),
+          'numpy': 'numpy',
       },
       classifiers=[
           'License :: OSI Approved :: MIT License',
