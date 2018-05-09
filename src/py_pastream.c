@@ -44,6 +44,9 @@ int callback(
     Py_PaStream * stream = (Py_PaStream *) user_data;
     long long frames = stream->frames;
     long pad = stream->pad;
+    int i, j, k;
+    unsigned char temp, *ptemp;
+    unsigned char samplesize;
 
     if ( status & 0xF ) {
         if ( status & paInputUnderflow )
@@ -57,11 +60,6 @@ int callback(
         stream->xruns++;
         stream->status |= status;
     }
-
-#ifdef PYPA_WIREMODE
-    // for testing only
-    in_data = out_data;
-#endif
 
     if ( frames >= 0 ) {
         // exit point (1 of 2)
@@ -97,6 +95,52 @@ int callback(
                 PaUtil_FlushRingBuffer(stream->txbuffer);
                 PaUtil_AdvanceRingBufferWriteIndex(stream->txbuffer, tempframes);
                 oframes += PaUtil_ReadRingBuffer(stream->txbuffer, out_data, oframes_left);
+            }
+        }
+
+        // Re-map data to requested output channels
+        if ( stream->txmapping != NULL ) {
+            samplesize = stream->txElementSize / stream->txchannels;
+            memcpy(stream->_mapping, stream->txmapping, stream->txchannels);
+
+            for ( i = 0 ; i < stream->txchannels ; i++ ) {
+                // inchannel = stream->_mapping[i];
+                // outchannel = i + 1; 
+                if ( stream->_mapping[i] == i + 1 || stream->_mapping[i] == 0 )
+                    continue;
+
+                ptemp = (unsigned char *) out_data;
+                if ( i + 1 == stream->txchannels || stream->_mapping[stream->_mapping[i] - 1] == 0 ) {
+                    for ( j = 0 ; j < oframes ; j++, ptemp += stream->txElementSize ) {
+                        memcpy(ptemp + i * samplesize, ptemp + (stream->_mapping[i] - 1)*samplesize, samplesize);
+                    }
+                }
+                else {
+                    for ( j = 0 ; j < oframes ; j++, ptemp += stream->txElementSize ) {
+                        for ( k = 0 ; k < samplesize ; k++) {
+                            temp = ptemp[i * samplesize + k];
+                            ptemp[i * samplesize + k] = ptemp[(stream->_mapping[i] - 1)*samplesize + k];
+                            ptemp[(stream->_mapping[i] - 1)*samplesize + k] = temp;
+                        }
+                    }
+                }
+
+                for ( k = i + 1 ; k < stream->txchannels ; k++) {
+                    if (stream->_mapping[k] == i + 1) 
+                        stream->_mapping[k] = stream->_mapping[i];
+                    else if (stream->_mapping[k] == stream->_mapping[i]) 
+                        stream->_mapping[k] = i + 1;
+                }
+            }
+            // Do channel zero out as a last step to avoid unnecessary swapping
+            for ( i = 0 ; i < stream->txchannels ; i++ ) {
+                if ( stream->_mapping[i] != 0 )
+                    continue;
+
+                ptemp = (unsigned char *) out_data + i * samplesize;
+                for ( j = 0 ; j < oframes ; j++, ptemp += stream->txElementSize ) {
+                    memset(ptemp, 0, samplesize);
+                }
             }
         }
 
@@ -142,6 +186,51 @@ int callback(
             offset = stream->offset - stream->frame_count;
             frames_left -= offset;
             in_data = (unsigned char *) in_data + offset*stream->rxbuffer->elementSizeBytes;
+        }
+
+        if ( stream->rxmapping != NULL ) {
+            samplesize = stream->rxElementSize / stream->rxchannels;
+            memcpy(stream->_mapping, stream->rxmapping, stream->rxchannels);
+
+            for ( i = 0 ; i < stream->rxchannels ; i++ ) {
+                // inchannel = stream->_mapping[i];
+                // outchannel = i + 1; 
+                if ( stream->_mapping[i] == i + 1 || stream->_mapping[i] == 0 )
+                    continue;
+
+                ptemp = (unsigned char *) in_data;
+                if ( i + 1 == stream->rxchannels || stream->_mapping[stream->_mapping[i] - 1] == 0 ) {
+                    for ( j = 0 ; j < oframes ; j++, ptemp += stream->rxElementSize ) {
+                        memcpy(ptemp + i * samplesize, ptemp + (stream->_mapping[i] - 1)*samplesize, samplesize);
+                    }
+                }
+                else {
+                    for ( j = 0 ; j < oframes ; j++, ptemp += stream->rxElementSize ) {
+                        for ( k = 0 ; k < samplesize ; k++) {
+                            temp = ptemp[i * samplesize + k];
+                            ptemp[i * samplesize + k] = ptemp[(stream->_mapping[i] - 1)*samplesize + k];
+                            ptemp[(stream->_mapping[i] - 1)*samplesize + k] = temp;
+                        }
+                    }
+                }
+
+                for ( k = i + 1 ; k < stream->rxchannels ; k++) {
+                    if (stream->_mapping[k] == i + 1) 
+                        stream->_mapping[k] = stream->_mapping[i];
+                    else if (stream->_mapping[k] == stream->_mapping[i]) 
+                        stream->_mapping[k] = i + 1;
+                }
+            }
+            // Do channel zero out as a last step to avoid unnecessary swapping
+            for ( i = 0 ; i < stream->rxchannels ; i++ ) {
+                if ( stream->_mapping[i] != 0 )
+                    continue;
+
+                ptemp = (unsigned char *) in_data + i * samplesize;
+                for ( j = 0 ; j < oframes ; j++, ptemp += stream->rxElementSize ) {
+                    memset(ptemp, 0, samplesize);
+                }
+            }
         }
 
         iframes = PaUtil_WriteRingBuffer(stream->rxbuffer, (const void *) in_data, frames_left);

@@ -1,5 +1,5 @@
 #define MAX_MESSAGE_LEN 128
-// #define PYPA_DEBUG      1
+// #define PYPA_DEBUG
 
 // interdependent behavior of frames & pad
 // frames < 0, pad >= 0:
@@ -21,12 +21,13 @@ typedef struct Py_PaStream {
     long pad;                     // Number of zero frames to pad the playback with
                                   // (< 0 means to pad playback whenever buffer is empty)
     unsigned long offset;         // Number of frames to skip from beginning of recordings
+    unsigned char rxchannels, txchannels;
+    unsigned char *rxmapping, *txmapping, *_mapping;
     unsigned long xruns;
-    ring_buffer_size_t txElementSize;
+    ring_buffer_size_t txElementSize, rxElementSize;    
     unsigned long inputOverflows, inputUnderflows;
     unsigned long outputOverflows, outputUnderflows;
-    PaUtilRingBuffer* rxbuffer;     // Receive buffer
-    PaUtilRingBuffer* txbuffer;     // Transmit buffer
+    PaUtilRingBuffer *rxbuffer, *txbuffer;
     char errorMsg[MAX_MESSAGE_LEN];  // Reserved for errors raised in the audio callback
     unsigned char _autoframes;   // Internal use only
 } Py_PaStream;
@@ -41,12 +42,13 @@ const Py_PaStream Py_PaStream_default = {
     -1,
     0,
     0,
-    0,
+    0, 0,
+    (unsigned char*) NULL, (unsigned char*) NULL, (unsigned char*) NULL,
     0,
     0, 0,
     0, 0,
-    (PaUtilRingBuffer*) NULL,
-    (PaUtilRingBuffer*) NULL,
+    0, 0,
+    (PaUtilRingBuffer*) NULL, (PaUtilRingBuffer*) NULL,
     { '\0' },
     0
 };

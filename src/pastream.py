@@ -249,6 +249,7 @@ class Stream(_sd._StreamBase):
         # Set up the C portaudio callback
         self._rxbuffer = self._txbuffer = None
         self._cstream = _ffi.NULL
+        self._crefs = []
         if kwargs.get('callback', None) is None:
             # Init the C PyPaStream object
             self._cstream = _ffi.new("Py_PaStream*")
@@ -308,8 +309,26 @@ class Stream(_sd._StreamBase):
         self._autoclose = False
         if kind == 'duplex':
             self._cstream.txElementSize = self.samplesize[1] * self.channels[1]
+            self._cstream.rxElementSize = self.samplesize[0] * self.channels[0]
+            self._cstream.txchannels = self.channels[1]
+            self._cstream.rxchannels = self.channels[0]
         elif kind == 'output':
+            self._cstream.txchannels = self.channels
             self._cstream.txElementSize = self.samplesize * self.channels
+        else: #if kind == 'input':
+            self._cstream.rxchannels = self.channels
+            self._cstream.rxElementSize = self.samplesize * self.channels
+
+        channels = max(self._cstream.txchannels, self._cstream.rxchannels)
+        self._crefs.append(_ffi.new('unsigned char[]', [0]*channels))
+        self._cstream._mapping = self._crefs[-1]
+
+        if self._cstream.txchannels:
+            self._crefs.append(_ffi.new('unsigned char[]', range(1, self._cstream.txchannels+1)))
+            self._cstream.txmapping = self._crefs[-1]
+        if self._cstream.rxchannels:
+            self._crefs.append(_ffi.new('unsigned char[]', range(1, self._cstream.rxchannels+1)))
+            self._cstream.rxmapping = self._crefs[-1]
 
     def __stopiothreads(self):
         # !This function is *not* thread safe!
@@ -452,6 +471,27 @@ class Stream(_sd._StreamBase):
                     self.__stopiothreads()
                 self._reraise_exceptions()
             return self.__state > 0
+
+    def _get_cmapping(self, mapping):
+        if mapping is None:
+            mapping = range(1, len(mapping) + 1)
+        elif not isinstance(mapping, dict):
+            nonzeromapping = [m for m in mapping if m > 0]
+            mapping = zip(mapping, range(1, len(mapping) + 1))
+            if len(set(nonzeromapping)) < len(nonzeromapping):
+                raise ValueError("bad channel mapping; channel duplication not supported")
+        else:
+            mapping = mapping.items()
+
+        cmapping = [0] * max(self._cstream.txchannels, self._cstream.rxchannels)
+        for a, b in mapping:
+            if b <= 0: 
+                raise ValueError("bad channel mapping; output channel must always be > 0")
+            if a > len(cmapping):
+                raise ValueError("bad channel mapping; input channel out of range")
+            cmapping[b-1] = a
+
+        return cmapping
 
     @property
     def isduplex(self):
@@ -644,6 +684,7 @@ class Stream(_sd._StreamBase):
         # Drop references to any buffers and external objects
         self._txthread_args = self._rxthread_args = None
         self._rxbuffer = self._txbuffer = None
+        self._crefs = []
 
         self._reraise_exceptions()
 
@@ -679,6 +720,15 @@ class Stream(_sd._StreamBase):
 
 # Mix-in purely for adding playback methods
 class _OutputStreamMixin(object):
+
+    @property
+    def txmapping(self):
+        return list(self._cstream.txmapping[0:self._cstream.txchannels])
+
+    @txmapping.setter
+    def txmapping(self, mapping):
+        cmapping = self._get_cmapping(mapping)
+        self._cstream.txmapping[0:len(cmapping)] = cmapping
 
     def set_source(self, source, buffersize=None, loop=False, args=(), kwargs={}):
         '''Set the playback source for the audio stream
@@ -805,6 +855,15 @@ class _OutputStreamMixin(object):
 
 # Mix-in purely for adding recording methods
 class _InputStreamMixin(object):
+
+    @property
+    def rxmapping(self):
+        return list(self._cstream.rxmapping[0:self._cstream.rxchannels])
+
+    @rxmapping.setter
+    def rxmapping(self, mapping):
+        cmapping = self._get_cmapping(mapping)
+        self._cstream.rxmapping[0:len(cmapping)] = cmapping
 
     def to_file(self, file, mode='w', **kwargs):
         '''Open a SoundFile for writing based on stream characteristics
@@ -1548,6 +1607,15 @@ def _get_parser(parser=None):
         csvsplit.whitespace = ','; csvsplit.whitespace_split = True
         return tuple(map(type or str, csvsplit))
 
+    def maptype(arg):
+        try:
+            a, b = arg.split(':')
+            a, b = int(a), int(b)
+            assert b > 0, "bad channel mapping; output channel must always be > 0"
+            return a, b
+        except ValueError:
+            return int(arg), None
+
     parser.add_argument("input", type=nullortype, metavar='input|NULL',
         help='''\
 Playback audio file. Use dash (-) to read from STDIN. Use one of {null, {}} or
@@ -1578,8 +1646,8 @@ Note that size type arguments are accepted in the form hours:minutes:seconds by
 default or in samples directly by appending an 's' suffix lead by an optional
 size suffix: k[ilo] K[ibi] m[ega] M[ebi]. (e.g. 1Ks == 1024 samples).''')
 
-    propts.add_argument("--buffersize", type=possizetype,
-        default=_PA_BUFFERSIZE, help='''\
+    propts.add_argument("--buffersize", type=possizetype, default=_PA_BUFFERSIZE, 
+        help='''\
 File buffering size in units of frames. Must be a power of 2. Determines the
 maximum amount of buffering for the input/output file(s). Use higher values to
 increase robustness against irregular file i/o behavior. (Default
@@ -1634,6 +1702,22 @@ PortAudio default device(s).''')
 Sample format(s) of audio device stream. Must be one of {%s}.'''
 % ', '.join(['null'] + list(_sd._sampleformats.keys())))
 
+    devopts.add_argument("--imap", type=maptype, 
+        metavar='CHIN[:CHOUT]', nargs='+',
+        help='''\
+Input to output playback channel mapping assuming one-based indexing: if the
+output channel number is omitted the positional index is assumed. Note that
+each input/output channel may only be mapped once (i.e., mixing channels and
+channel duplication are not supported).''')
+
+    devopts.add_argument("--omap", type=maptype,
+        metavar='CHIN[:CHOUT]', nargs='+',
+        help='''\
+Input to output recording channel mapping assuming one-based indexing: if the
+output channel number is omitted the positional index is assumed. Note that
+each input/output channel may only be mapped once (i.e., mixing channels and
+channel duplication are not supported).''')
+
     devopts.add_argument("-r", "--rate", dest='samplerate', type=possizetype,
         help='''\
 Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
@@ -1680,6 +1764,8 @@ def _main(argv=None):
     def unpack(x):
         return x[0] if x and len(x) == 1 else x and x[::-1]
 
+    settings = None
+
     try:
         stream, record, playback, kind = _FileStreamFactory(
             args.output, args.input,
@@ -1695,7 +1781,8 @@ def _main(argv=None):
             format=unpack(args.file_type),
             device=unpack(args.device),
             channels=unpack(args.channels),
-            dtype=unpack(args.dtype))
+            dtype=unpack(args.dtype),
+            extra_settings=settings)
     except (TypeError, ValueError):
         traceback.print_exc()
         parser.print_usage()
@@ -1712,6 +1799,12 @@ def _main(argv=None):
     print("->", 'null' if record is None else record, file=stdout)
 
     with stream:
+        if args.omap:
+            rxmapping = sorted(((a, b or i) for i,(a,b) in enumerate(args.omap, 1)), key=lambda x: x[1])
+            stream.rxmapping = [x[0] for x in rxmapping]
+        if args.imap:
+            txmapping = sorted(((a, b or i) for i,(a,b) in enumerate(args.imap, 1)), key=lambda x: x[1])
+            stream.txmapping = [x[0] for x in txmapping]
         try:
             stream.start()
             t1 = _time.time()

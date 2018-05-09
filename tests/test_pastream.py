@@ -107,10 +107,14 @@ def randstream(preamblesize, channels, samplesize, dtype='int32', state=None):
         block = randint(minval, maxval+1, (n, channels)) << shift
         n = (yield block.astype(dtype))
 
-def looper(stream, maxframes, **kwargs):
+def looper(stream, maxframes, mapping=None, **kwargs):
     channels = stream.channels
     samplesize = stream.samplesize
     dtype = stream.dtype
+    if mapping is not None:
+        mapping = [x-1 for x in mapping]
+    else:
+        mapping = Ellipsis
 
     def writer(stream, ringbuff, rblockgen, loop=False):
         ringbuff.write(next(rblockgen))
@@ -172,9 +176,10 @@ def looper(stream, maxframes, **kwargs):
     # Loop forever checking we match the psuedorandom signal
     while mframes < maxframes:
         inframes = rblockgen.send(len(outframes))
-        npt.assert_array_equal(inframes, outframes, "Loopback data mismatch")
+        npt.assert_array_equal(inframes[:, mapping], outframes, "Loopback data mismatch")
         mframes += len(outframes)
         outframes = frombuffer(next(chunkgen))
+
 
 @pytest.fixture
 def random_soundfile_input(tmpdir, scope='session'):
@@ -353,6 +358,17 @@ def test_stream_replay(devargs):
         stream.wait(0.001)
         stream.stop()
         assert stream.stopped
+
+def test_channel_mapping(devargs):
+    with ps.DuplexStream(**devargs) as stream:
+        mapping = np.random.choice(range(1, stream.channels[1] + 1), stream.channels[1], replace=False)
+        stream.txmapping = mapping
+        looper(stream, stream.samplerate, mapping=mapping)
+
+    with ps.DuplexStream(**devargs) as stream:
+        mapping = np.random.choice(range(1, stream.channels[0] + 1), stream.channels[0], replace=False)
+        stream.rxmapping = mapping
+        looper(stream, stream.samplerate, mapping=mapping)
 
 # For testing purposes
 class MyException(Exception):
