@@ -6,8 +6,6 @@
 #endif
 
 
-unsigned int g_wiremode = 0;
-
 void init_stream(Py_PaStream *stream)
 {
     *stream = Py_PaStream_default;
@@ -60,9 +58,10 @@ int callback(
         stream->status |= status;
     }
 
+#ifdef PYPA_WIREMODE
     // for testing only
-    if ( g_wiremode )
-        in_data = out_data;
+    in_data = out_data;
+#endif
 
     if ( frames >= 0 ) {
         // exit point (1 of 2)

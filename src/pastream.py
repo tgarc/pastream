@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) 2017 Thomas J. Garcia
+# Copyright (c) 2018 Thomas J. Garcia
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -1706,7 +1706,7 @@ def _main(argv=None):
     else:
         stdout = _sys.stdout
 
-    statline = "\r   {:02.0f}:{:02.0f}:{:02.2f}s ({:d} xruns, {:6.2f}% load)\r"
+    statline = "\r   {:02.0f}:{:02.0f}:{:05.2f}s ({:d} xruns, {:6.2f}% load)\r"
     print("<-", 'null' if playback is None else playback, file=stdout)
     print("--", stream, file=stdout)
     print("->", 'null' if record is None else record, file=stdout)
