@@ -1722,6 +1722,13 @@ channel duplication are not supported).''')
         help='''\
 Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
 
+    devopts.add_argument("-s", "--channel-select", metavar='channel[,channel,...]',
+        type=lambda x: nullortype(x, lambda y: csvtype(y, possizetype)), nargs='+',
+        help='''\
+Channel select; open a subset of audio device's available channels. Expects a
+comma-delimited list of one-based channel indices. Available with ASIO
+backend only.''')
+
     fileopts = parser.add_argument_group("audio file formatting options",
                                          description='''\
 Options accept single values or pairs. One of {null, {}} or an empty string
@@ -1765,6 +1772,18 @@ def _main(argv=None):
         return x[0] if x and len(x) == 1 else x and x[::-1]
 
     settings = None
+    if args.channel_select:
+        try:
+            if args.channels[0] is None:
+                args.channels[0] = len(args.channel_select[0] or []) or None
+            if args.channels[1] is None:
+                args.channels[1] = args.channels[0] if len(args.channel_select) == 1 or args.channel_select[1] is None else len(args.channel_select[1])
+        except TypeError:
+            args.channels = [cs and len(cs) for cs in args.channel_select]
+        except IndexError:
+            args.channels = (args.channels[0], args.channels[0] if len(args.channel_select) == 1 or args.channel_select[1] is None else len(args.channel_select[1]))
+        
+        settings = [cs and _sd.AsioSettings([x-1 for x in cs]) for cs in args.channel_select]
 
     try:
         stream, record, playback, kind = _FileStreamFactory(
@@ -1782,7 +1801,7 @@ def _main(argv=None):
             device=unpack(args.device),
             channels=unpack(args.channels),
             dtype=unpack(args.dtype),
-            extra_settings=settings)
+            extra_settings=unpack(settings))
     except (TypeError, ValueError):
         traceback.print_exc()
         parser.print_usage()
@@ -1802,7 +1821,7 @@ def _main(argv=None):
         if args.omap:
             rxmapping = sorted(((a, b or i) for i,(a,b) in enumerate(args.omap, 1)), key=lambda x: x[1])
             stream.rxmapping = [x[0] for x in rxmapping]
-        if args.imap:
+        if args.imap:    
             txmapping = sorted(((a, b or i) for i,(a,b) in enumerate(args.imap, 1)), key=lambda x: x[1])
             stream.txmapping = [x[0] for x in txmapping]
         try:
