@@ -473,9 +473,7 @@ class Stream(_sd._StreamBase):
             return self.__state > 0
 
     def _get_cmapping(self, mapping):
-        if mapping is None:
-            mapping = range(1, len(mapping) + 1)
-        elif not isinstance(mapping, dict):
+        if not isinstance(mapping, dict):
             nonzeromapping = [m for m in mapping if m > 0]
             mapping = zip(mapping, range(1, len(mapping) + 1))
             if len(set(nonzeromapping)) < len(nonzeromapping):
@@ -727,6 +725,8 @@ class _OutputStreamMixin(object):
 
     @txmapping.setter
     def txmapping(self, mapping):
+        if mapping is None:
+            mapping = range(1, self._cstream.txchannels + 1)
         cmapping = self._get_cmapping(mapping)
         self._cstream.txmapping[0:len(cmapping)] = cmapping
 
@@ -780,7 +780,7 @@ class _OutputStreamMixin(object):
         writer = None
         if isinstance(source, _sf.SoundFile):
             writer = self._soundfileplayer
-            if source.samplerate != self.samplerate or source.channels != channels:
+            if source.samplerate != self.samplerate or source.channels != sum(m > 0 for m in self.txmapping):
                 raise ValueError("Playback file samplerate/channels mismatch")
             if loop and not source.seekable():
                 raise ValueError("Can't loop playback; file is not seekable")
@@ -862,6 +862,8 @@ class _InputStreamMixin(object):
 
     @rxmapping.setter
     def rxmapping(self, mapping):
+        if mapping is None:
+            mapping = range(1, self._cstream.rxchannels + 1)
         cmapping = self._get_cmapping(mapping)
         self._cstream.rxmapping[0:len(cmapping)] = cmapping
 
@@ -899,14 +901,13 @@ class _InputStreamMixin(object):
             except (AttributeError, IndexError):
                 fformat = None
 
+        channels = sum(m > 0 for m in self.rxmapping)
         try:
-            channels = self.channels[0]
-            dtype = self.dtype[0]
             ssize = self.samplesize[0]
+            dtype = self.dtype[0]
         except TypeError:
-            channels = self.channels
-            dtype = self.dtype
             ssize = self.samplesize
+            dtype = self.dtype
 
         if kwargs.get('samplerate', None) is None:
             kwargs['samplerate'] = int(self.samplerate)
@@ -974,7 +975,7 @@ class _InputStreamMixin(object):
         reader = None
         if isinstance(sink, _sf.SoundFile):
             reader = self._soundfilerecorder
-            if sink.samplerate != self.samplerate or sink.channels != channels:
+            if sink.samplerate != self.samplerate or sink.channels != sum(m > 0 for m in self.rxmapping):
                 raise ValueError("Recording file samplerate/channels mismatch")
             args, kwargs = (sink,) + args, {}
         elif isinstance(sink, RingBuffer):
@@ -1482,11 +1483,13 @@ def chunks(chunksize=None, overlap=0, frames=-1, pad=0, offset=0,
 
 
 # Used solely for the pastream app
-def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False, **kwargs):
+def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False,
+                       rxmapping=None, txmapping=None, **kwargs):
     frames = kwargs.pop('frames')
     pad = kwargs.pop('pad')
     offset = kwargs.pop('offset')
 
+    ichannels, ochannels = _sd._split(kwargs.get('channels', None))
     iformat, oformat = _sd._split(kwargs.pop('format'))
     isubtype, osubtype = _sd._split(kwargs.pop('subtype'))
     iendian, oendian = _sd._split(kwargs.pop('endian'))
@@ -1503,6 +1506,8 @@ def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False, 
     if record is not None and playback is not None:
         kind = 'duplex'
         stream = DuplexStream.from_file(playback_fh, **kwargs)
+        stream.rxmapping = rxmapping
+        stream.txmapping = txmapping
         record_fh = stream.to_file(record, subtype=isubtype, endian=iendian, format=iformat)
         stream.set_source(playback_fh, buffersize, loop)
         stream.set_sink(record_fh, buffersize)
@@ -1510,12 +1515,14 @@ def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False, 
         kind = 'output'
         record_fh = None
         stream = OutputStream.from_file(playback_fh, **kwargs)
+        stream.txmapping = txmapping
         stream.set_source(playback_fh, buffersize, loop)
     elif record is not None:
         kind = 'input'
         playback_fh = None
         stream = InputStream(**kwargs)
-        record_fh = stream.to_file(record, format=iformat, subtype=isubtype, endian=iendian)
+        stream.rxmapping = rxmapping
+        record_fh = stream.to_file(record, subtype=isubtype, endian=iendian, format=iformat)
         stream.set_sink(record_fh, buffersize)
     else:
         raise TypeError("At least one of {playback, record} must be non-null.")
@@ -1527,7 +1534,7 @@ def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False, 
         v = locs[k]
         if v is None: continue
         if isinstance(v, str): # parse the format H:M:S to number of seconds
-            seconds = sum(float(x)*60**i for i, x in enumerate(reversed(v.split(':'))))
+            seconds = sum(x * (60.0 ** i) for i, x in enumerate(v.split(':')[::-1]))
             v = int(round(seconds * stream.samplerate))
         setattr(stream, '_' + k, v)
 
@@ -1598,7 +1605,7 @@ def _get_parser(parser=None):
         return framestype(x)
 
     def nullortype(x, type=None):
-        if x.lower() in ('null', '', '{}'):
+        if x.lower() in ('null', '', '{}', '[]'):
             return None
         return x if type is None else type(x)
 
@@ -1608,13 +1615,16 @@ def _get_parser(parser=None):
         return tuple(map(type or str, csvsplit))
 
     def maptype(arg):
-        try:
-            a, b = arg.split(':')
-            a, b = int(a), int(b)
-            assert b > 0, "bad channel mapping; output channel must always be > 0"
-            return a, b
-        except ValueError:
-            return int(arg), None
+        mapping = []
+        for i, x in enumerate(arg.split(','), 1):
+            try:
+                a, b = x.split(':')
+                a, b = int(a), int(b)
+                assert b > 0, "bad channel mapping; output channel must always be > 0"
+            except ValueError:
+                a, b = int(x), i
+            mapping.append((a, b))
+        return [x[0] for x in sorted(mapping, key=lambda y: y[1])]
 
     parser.add_argument("input", type=nullortype, metavar='input|NULL',
         help='''\
@@ -1653,9 +1663,6 @@ maximum amount of buffering for the input/output file(s). Use higher values to
 increase robustness against irregular file i/o behavior. (Default
 %(default)d)''')
 
-    propts.add_argument("--loop", action='store_true',
-        help="Loop playback indefinitely.")
-
     propts.add_argument("-d", "--duration", type=framestype, default=-1,
         help='''\
 Limit playback/capture to a certain duration. If duration is negative (the
@@ -1665,6 +1672,17 @@ indefinitely.''')
 
     propts.add_argument("--fatal-xruns", action='store_true',
         help="Exit with an error if any xruns are reported.")
+
+    propts.add_argument("--loop", action='store_true',
+        help="Loop playback indefinitely.")
+
+    propts.add_argument("-m", "--map", type=maptype, default=[], nargs='+',
+                        metavar='CHMAP', help='''\
+Input to output channel mapping assuming one-based indexing in the form
+CHIN[:CHOUT][,CHIN[:CHOUT]...]. If the output channel number is omitted the
+positional index is assumed. Note that each input/output channel may only be
+mapped once (i.e., mixing channels and channel duplication are not
+supported).''')
 
     propts.add_argument("-o", "--offset", type=posframestype, default=0,
         help='''\
@@ -1701,22 +1719,6 @@ PortAudio default device(s).''')
         help='''\
 Sample format(s) of audio device stream. Must be one of {%s}.'''
 % ', '.join(['null'] + list(_sd._sampleformats.keys())))
-
-    devopts.add_argument("--imap", type=maptype, 
-        metavar='CHIN[:CHOUT]', nargs='+',
-        help='''\
-Input to output playback channel mapping assuming one-based indexing: if the
-output channel number is omitted the positional index is assumed. Note that
-each input/output channel may only be mapped once (i.e., mixing channels and
-channel duplication are not supported).''')
-
-    devopts.add_argument("--omap", type=maptype,
-        metavar='CHIN[:CHOUT]', nargs='+',
-        help='''\
-Input to output recording channel mapping assuming one-based indexing: if the
-output channel number is omitted the positional index is assumed. Note that
-each input/output channel may only be mapped once (i.e., mixing channels and
-channel duplication are not supported).''')
 
     devopts.add_argument("-r", "--rate", dest='samplerate', type=possizetype,
         help='''\
@@ -1774,16 +1776,24 @@ def _main(argv=None):
     settings = None
     if args.channel_select:
         try:
-            if args.channels[0] is None:
+            if args.channels[0] is None and args.input:
                 args.channels[0] = len(args.channel_select[0] or []) or None
-            if args.channels[1] is None:
-                args.channels[1] = args.channels[0] if len(args.channel_select) == 1 or args.channel_select[1] is None else len(args.channel_select[1])
+            if args.channels[1] is None and args.output and len(args.channel_select) > 1:
+                args.channels[1] = len(args.channel_select[1] or []) or None
         except TypeError:
             args.channels = [cs and len(cs) for cs in args.channel_select]
         except IndexError:
-            args.channels = (args.channels[0], args.channels[0] if len(args.channel_select) == 1 or args.channel_select[1] is None else len(args.channel_select[1]))
+            if args.output and len(args.channel_select) > 1:
+                args.channels = (args.channels[0], args.channel_select[1])
         
         settings = [cs and _sd.AsioSettings([x-1 for x in cs]) for cs in args.channel_select]
+
+    txmapping, rxmapping = None, None
+    if len(args.map) > 1:
+        txmapping, rxmapping = args.map
+    elif len(args.map):
+        if args.output: rxmapping = args.map[0]
+        else:           txmapping = args.map[0]
 
     try:
         stream, record, playback, kind = _FileStreamFactory(
@@ -1801,7 +1811,8 @@ def _main(argv=None):
             device=unpack(args.device),
             channels=unpack(args.channels),
             dtype=unpack(args.dtype),
-            extra_settings=unpack(settings))
+            extra_settings=unpack(settings),
+            txmapping=txmapping, rxmapping=rxmapping)
     except (TypeError, ValueError):
         traceback.print_exc()
         parser.print_usage()
@@ -1818,12 +1829,6 @@ def _main(argv=None):
     print("->", 'null' if record is None else record, file=stdout)
 
     with stream:
-        if args.omap:
-            rxmapping = sorted(((a, b or i) for i,(a,b) in enumerate(args.omap, 1)), key=lambda x: x[1])
-            stream.rxmapping = [x[0] for x in rxmapping]
-        if args.imap:    
-            txmapping = sorted(((a, b or i) for i,(a,b) in enumerate(args.imap, 1)), key=lambda x: x[1])
-            stream.txmapping = [x[0] for x in txmapping]
         try:
             stream.start()
             t1 = _time.time()

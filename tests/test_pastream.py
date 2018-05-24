@@ -360,15 +360,17 @@ def test_stream_replay(devargs):
         assert stream.stopped
 
 def test_channel_mapping(devargs):
-    with ps.DuplexStream(**devargs) as stream:
-        mapping = np.random.choice(range(1, stream.channels[1] + 1), stream.channels[1], replace=False)
-        stream.txmapping = mapping
-        looper(stream, stream.samplerate, mapping=mapping)
+    for i in range(1,8):
+        print(i)
+        with ps.DuplexStream(**devargs) as stream:
+            mapping = np.random.choice(range(1, stream.channels[1] + 1), stream.channels[1], replace=False)
+            stream.txmapping = mapping
+            looper(stream, stream.samplerate, mapping=mapping)
 
-    with ps.DuplexStream(**devargs) as stream:
-        mapping = np.random.choice(range(1, stream.channels[0] + 1), stream.channels[0], replace=False)
-        stream.rxmapping = mapping
-        looper(stream, stream.samplerate, mapping=mapping)
+        with ps.DuplexStream(**devargs) as stream:
+            mapping = np.random.choice(range(1, stream.channels[0] + 1), stream.channels[0], replace=False)
+            stream.rxmapping = mapping
+            looper(stream, stream.samplerate, mapping=mapping)
 
 # For testing purposes
 class MyException(Exception):

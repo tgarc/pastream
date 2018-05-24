@@ -30,7 +30,7 @@ void reset_stream(Py_PaStream *stream) {
 };
 
 int callback(
-    const void* in_data,
+    void* in_data,
     void* out_data,
     unsigned long frame_count,
     const PaStreamCallbackTimeInfo* timeInfo,
