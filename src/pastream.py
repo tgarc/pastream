@@ -1379,6 +1379,8 @@ class DuplexStream(InputStream, OutputStream):
 
         Parameters
         -----------
+        playback : buffer or SoundFile
+            Playback source.
         frames : int, sometimes optional
             Number of frames to play/record. This is required whenever
             `playback` is a file and `out` is not given.
@@ -1404,9 +1406,6 @@ class DuplexStream(InputStream, OutputStream):
             import numpy
         except ImportError:
             numpy = None
-
-        ichannels, ochannels = self.channels
-        isamplesize, osamplesize = self.samplesize
 
         self.set_source(playback, buffersize, loop)
 

@@ -9,8 +9,8 @@ include docs/requirements.txt docs/*.rst docs/Makefile docs/make.bat docs/*.py
 include etc/README.rst
 include examples/requirements.txt examples/README.rst
 include tests/requirements.txt
-recursive-include etc *.py *.m
+recursive-include etc *
 recursive-include tests *.py
 recursive-include examples *.py
-recursive-include docs/_static
-recursive-include docs/_template
+recursive-include docs/_static *
+recursive-include docs/_template *

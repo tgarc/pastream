@@ -60,7 +60,7 @@ def find_soundfile_delay(xf, preamble, dtype):
 
     return off
 
-def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
+def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype, loop=False):
     delay = find_soundfile_delay(out_fh, preamble, dtype)
     assert delay != -1, "Test Preamble pattern not found"
     out_fh.seek(delay)
@@ -71,6 +71,9 @@ def assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype):
     inpblk = np.zeros((blocksize, inp_fh.channels), dtype=dtype)
     for outblk in out_fh.blocks(blocksize, dtype=dtype, always_2d=True):
         readframes = inp_fh.buffer_read_into(inpblk[:len(outblk)], dtype=dtype)
+        while loop and readframes < len(outblk):
+            inp_fh.seek(0)
+            readframes += inp_fh.buffer_read_into(inpblk[readframes:len(outblk)], dtype=dtype)
 
         inp = inpblk[:readframes].view(unsigned_dtype)
         out = outblk.view(unsigned_dtype)
@@ -89,7 +92,7 @@ def randstream(preamblesize, channels, samplesize, dtype='int32', state=None):
     value for `preamblesize` samples which can be used in testing to find the
     beginning of a recording.
 
-    """    
+    """
     shift = 8 * (4 - samplesize)
     minval = -(PREAMBLE + 1 >> shift)
     maxval =   PREAMBLE     >> shift
@@ -201,7 +204,7 @@ def random_soundfile_input(tmpdir, scope='session'):
         rdm_fh.write(next(blocks))
         rdm_fh.write(blocks.send(samplerate))
         rdm_fh.seek(0)
-        
+
         if DEVICE_KWARGS['dtype'] == 'int24':
             # Tell the OS it's a 32-bit stream and ignore the extra zeros
             # because 24 bit streams are annoying to deal with
@@ -247,7 +250,7 @@ def test_stdin_stdout_loopback(random_soundfile_input, devargs):
 
     inp_fh.name.seek(0)
 
-    proc = subprocess.Popen(('pastream', '-', '-', '-t', 'au', '-f', dtype, '-D', 
+    proc = subprocess.Popen(('pastream', '-', '-', '-t', 'au', '-f', dtype, '-D',
         shlex_quote(devargs['device'])), stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     stdout = proc.communicate(inp_fh.name.read())[0]
     assert proc.returncode == 0
@@ -361,7 +364,6 @@ def test_stream_replay(devargs):
 
 def test_channel_mapping(devargs):
     for i in range(1,8):
-        print(i)
         with ps.DuplexStream(**devargs) as stream:
             mapping = np.random.choice(range(1, stream.channels[1] + 1), stream.channels[1], replace=False)
             stream.txmapping = mapping
@@ -371,6 +373,27 @@ def test_channel_mapping(devargs):
             mapping = np.random.choice(range(1, stream.channels[0] + 1), stream.channels[0], replace=False)
             stream.rxmapping = mapping
             looper(stream, stream.samplerate, mapping=mapping)
+
+def test_looping(devargs):
+    # WIREMODE must be enabled for this test
+    with ps.DuplexStream(**devargs) as stream:
+        randblock = np.random.randint(0, (1 << 16) - 1, (int(stream.samplerate), stream.channels[0]), dtype='int32')
+        out = stream.playrec(randblock, blocking=True, frames=len(randblock) * 5, loop=True)
+        for i in range(5):
+            npt.assert_array_equal(randblock, out[i*len(randblock):(i+1)*len(randblock)])
+
+def test_soundfile_looping(random_soundfile_input, devargs):
+    inp_fh, preamble, dtype = random_soundfile_input
+
+    devargs['dtype'] = dtype
+
+    outf = tempfile.TemporaryFile()
+    with ps.DuplexStream(**devargs) as stream:
+        out_fh = stream.to_file(outf, 'w+', format='wav')
+        stream.playrec(inp_fh, frames=len(inp_fh)*5, out=out_fh, loop=True, blocking=True)
+
+    out_fh.seek(0); inp_fh.seek(0)
+    assert_soundfiles_equal(inp_fh, out_fh, preamble, dtype, loop=True)
 
 # For testing purposes
 class MyException(Exception):

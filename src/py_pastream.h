@@ -1,5 +1,8 @@
 #define MAX_MESSAGE_LEN 128
+// Enable flags with e.g.
+// CFLAGS='-DPYPA_DEBUG' pip install .
 // #define PYPA_DEBUG
+// #define PYPA_WIREMODE
 
 // interdependent behavior of frames & pad
 // frames < 0, pad >= 0:
