@@ -21,10 +21,10 @@ matrix:
       before_install:
         - brew update
         - brew install libffi
-        - virtualenv env -p python
-        - source env/bin/activate
 
 script:
+  - virtualenv env -p python
+  - source env/bin/activate
   - pip install twine cibuildwheel
   - cibuildwheel --output-dir wheelhouse
   - |
