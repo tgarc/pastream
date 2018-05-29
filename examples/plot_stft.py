@@ -11,7 +11,7 @@ import traceback
 
 __usage__ = "[device[ playback]]"
 
-update = 1536
+update = 1024
 
 window = np.hanning(update)
 
@@ -22,7 +22,7 @@ def draw(data):
 
 def init():
     line.set_xdata(stream.samplerate*np.arange(update//2 + 1) / update)
-    ax.axis((0, stream.samplerate / 2, 0, 1))
+    ax.axis((0, min(stream.samplerate / 2, 20e3), 0, 1))
     fig.tight_layout()
 
     return line,

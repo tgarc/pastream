@@ -12,7 +12,7 @@ import traceback
 
 __usage__ = "[device[ playback]]"
 
-update = 1536
+update = 1024
 
 def draw(data):
     global plotdata

@@ -94,7 +94,7 @@ int callback(
             PaUtil_FlushRingBuffer(stream->txbuffer);
             PaUtil_AdvanceRingBufferWriteIndex(stream->txbuffer, tempframes);
             oframes += PaUtil_ReadRingBuffer(stream->txbuffer,
-                           (unsigned char *) out_data + oframes*stream->txbuffer->elementSizeBytes,
+                           (unsigned char *) out_data + oframes*stream->txElementSize,
                            oframes_left - oframes);
         }
 
@@ -146,9 +146,9 @@ int callback(
 
         // No matter what happens, fill the remainder of the output buffer with zeros
         if ( oframes < frame_count )
-            memset((unsigned char *) out_data + oframes*stream->txbuffer->elementSizeBytes,
+            memset((unsigned char *) out_data + oframes*stream->txElementSize,
                    0,
-                   (frame_count - oframes)*stream->txbuffer->elementSizeBytes);
+                   (frame_count - oframes)*stream->txElementSize);
 
         if ( oframes < frames_left) {
             if ( frames < 0 ) {
@@ -191,7 +191,7 @@ int callback(
         if ( stream->frame_count < stream->offset ) {
             offset = stream->offset - stream->frame_count;
             frames_left -= offset;
-            in_data = (unsigned char *) in_data + offset*stream->rxbuffer->elementSizeBytes;
+            in_data = (unsigned char *) in_data + offset*stream->rxElementSize;
         }
 
         if ( stream->rxmapping != NULL ) {

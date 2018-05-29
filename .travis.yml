@@ -1,11 +1,6 @@
 notifications:
   email: false
 
-# Some python environment update for linux screwed up my build
-# see: https://github.com/travis-ci/travis-ci/issues/8378
-group: 
-  deprecated-2017Q3
-
 env:
   global:
     - TWINE_USERNAME=tgarc
@@ -24,9 +19,8 @@ matrix:
       env: PKG_CONFIG_PATH="$PKG_CONFIG_PATH":/usr/local/opt/libffi/lib/pkgconfig
       language: generic
       before_install:
-        # This is also a recent travis-ci update screwup: 
-        # https://github.com/PowerShell/PowerShell/issues/5062
-        - HOMEBREW_NO_AUTO_UPDATE=1 brew install libffi
+        - brew update
+        - brew install libffi
         - virtualenv env -p python
         - source env/bin/activate
 

@@ -37,10 +37,10 @@ API Reference
    :inherited-members:
 
 .. autoclass:: InputStream
-   :members: chunks, set_sink, record
+   :members: chunks, set_sink, record, rxmapping, to_file
 
 .. autoclass:: OutputStream
-   :members: set_source, play
+   :members: set_source, play, txmapping, from_file
 
 .. autoclass:: DuplexStream
-   :members: playrec
+   :members: playrec, rxmapping, txmapping, to_file, from_file

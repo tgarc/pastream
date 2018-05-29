@@ -21,7 +21,7 @@
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """pastream: GIL-less Portaudio Streams for Python
 """
-from __future__ import print_function as _print_function
+from __future__ import print_function as _print_function, division as _division
 try:                import Queue as _queue
 except ImportError: import queue as _queue
 import math as _math
@@ -232,6 +232,25 @@ def _soundfileplayer(stream, txbuffer, out_fh, loop=False):
 
         _time.sleep(sleeptime)
 
+# convert a generic channel mapping into the format py_pastream expects
+def _get_cmapping(mapping, channels):
+    if not isinstance(mapping, dict):
+        nonzeromapping = [m for m in mapping if m > 0]
+        mapping = zip(mapping, range(1, len(mapping) + 1))
+        if len(set(nonzeromapping)) < len(nonzeromapping):
+            raise ValueError("bad channel mapping; a channel was repeated")
+    else:
+        mapping = mapping.items()
+
+    cmapping = [0] * channels
+    for a, b in mapping:
+        if b <= 0:
+            raise ValueError("bad channel mapping; output channel must always be > 0")
+        if a > len(cmapping):
+            raise ValueError("bad channel mapping; input channel out of range")
+        cmapping[b-1] = a
+
+    return cmapping
 
 # TODO?: add option to do asynchronous exception raising
 class Stream(_sd._StreamBase):
@@ -324,10 +343,10 @@ class Stream(_sd._StreamBase):
         self._cstream._mapping = self._crefs[-1]
 
         if self._cstream.txchannels:
-            self._crefs.append(_ffi.new('unsigned char[]', range(1, self._cstream.txchannels+1)))
+            self._crefs.append(_ffi.new('unsigned char[]', list(range(1, self._cstream.txchannels+1))))
             self._cstream.txmapping = self._crefs[-1]
         if self._cstream.rxchannels:
-            self._crefs.append(_ffi.new('unsigned char[]', range(1, self._cstream.rxchannels+1)))
+            self._crefs.append(_ffi.new('unsigned char[]', list(range(1, self._cstream.rxchannels+1))))
             self._cstream.rxmapping = self._crefs[-1]
 
     def __stopiothreads(self):
@@ -472,25 +491,6 @@ class Stream(_sd._StreamBase):
                 self._reraise_exceptions()
             return self.__state > 0
 
-    def _get_cmapping(self, mapping):
-        if not isinstance(mapping, dict):
-            nonzeromapping = [m for m in mapping if m > 0]
-            mapping = zip(mapping, range(1, len(mapping) + 1))
-            if len(set(nonzeromapping)) < len(nonzeromapping):
-                raise ValueError("bad channel mapping; channel duplication not supported")
-        else:
-            mapping = mapping.items()
-
-        cmapping = [0] * max(self._cstream.txchannels, self._cstream.rxchannels)
-        for a, b in mapping:
-            if b <= 0: 
-                raise ValueError("bad channel mapping; output channel must always be > 0")
-            if a > len(cmapping):
-                raise ValueError("bad channel mapping; input channel out of range")
-            cmapping[b-1] = a
-
-        return cmapping
-
     @property
     def isduplex(self):
         """Return whether this is a full duplex stream or not"""
@@ -526,6 +526,11 @@ class Stream(_sd._StreamBase):
 
     @property
     def xruns(self):
+        """Running total of xruns.
+
+        Each new starting of the stream resets this number to zero.
+
+        """
         return self._cstream.xruns
 
     @property
@@ -721,17 +726,29 @@ class _OutputStreamMixin(object):
 
     @property
     def txmapping(self):
+        """Mutable mapping of input data channel to output channels
+
+        A mutable property specifying what input data channels are mapped to
+        each output channel. Note that input channels may only be mapped once
+        (i.e., channel duplication is not supported). Can also be specified as
+        a dict of input:output channel key value pairs.
+
+        See Also
+        --------
+        InputStream.rxmapping
+
+        """
         return list(self._cstream.txmapping[0:self._cstream.txchannels])
 
     @txmapping.setter
     def txmapping(self, mapping):
         if mapping is None:
             mapping = range(1, self._cstream.txchannels + 1)
-        cmapping = self._get_cmapping(mapping)
+        cmapping = _get_cmapping(mapping, self._cstream.txchannels)
         self._cstream.txmapping[0:len(cmapping)] = cmapping
 
-    def set_source(self, source, buffersize=None, loop=False, args=(), kwargs={}):
-        '''Set the playback source for the audio stream
+    def set_source(self, source, loop=False, buffersize=None, args=(), kwargs={}):
+        """Set the playback source for the audio stream
 
         Parameters
         -----------
@@ -766,7 +783,7 @@ class _OutputStreamMixin(object):
         --------
         :meth:`InputStream.set_sink`
 
-        '''
+        """
         try:
             channels = self.channels[1]
             elementsize = channels * self.samplesize[1]
@@ -780,7 +797,7 @@ class _OutputStreamMixin(object):
         writer = None
         if isinstance(source, _sf.SoundFile):
             writer = self._soundfileplayer
-            if source.samplerate != self.samplerate or source.channels != sum(m > 0 for m in self.txmapping):
+            if source.samplerate != self.samplerate or source.channels != channels:
                 raise ValueError("Playback file samplerate/channels mismatch")
             if loop and not source.seekable():
                 raise ValueError("Can't loop playback; file is not seekable")
@@ -831,10 +848,17 @@ class _OutputStreamMixin(object):
             padding to be automatically chosen so that the total playback length
             matches `frames` (or, if frames is negative, zero padding will be added
             indefinitely).
-        buffersize : int
-            Buffer size to use for (double) buffering audio data from
-            file. Only applicable when `playback` is a file. Must be a power of
-            2.
+        blocking : bool, optional
+            Wait for playback to finish before returning.
+
+        Other Parameters
+        -----------------
+        loop, buffersize
+            See :meth:`OutputStream.set_source`
+
+        See Also
+        --------
+        :meth:`OutputStream.set_source`, :meth:`DuplexStream.playrec`
 
         """
         # Null out any rx thread or rx buffer pointer but note that we
@@ -843,7 +867,7 @@ class _OutputStreamMixin(object):
         self._rxthread_args = None
         self._cstream.rxbuffer = _ffi.NULL
 
-        self.set_source(playback, buffersize, loop)
+        self.set_source(playback, loop, buffersize)
 
         self._pad = pad
         self._frames = frames
@@ -858,17 +882,29 @@ class _InputStreamMixin(object):
 
     @property
     def rxmapping(self):
+        """Mutable mapping of input data channel to output channels
+
+        A mutable property specifying what input data channels are mapped to
+        each output channel. Note that input channels may only be mapped once
+        (i.e., channel mixing is not supported). Can also be specified as a
+        dict of input:output channel key value pairs.
+
+        See Also
+        --------
+        OutputStream.txmapping
+
+        """
         return list(self._cstream.rxmapping[0:self._cstream.rxchannels])
 
     @rxmapping.setter
     def rxmapping(self, mapping):
         if mapping is None:
             mapping = range(1, self._cstream.rxchannels + 1)
-        cmapping = self._get_cmapping(mapping)
+        cmapping = _get_cmapping(mapping, self._cstream.rxchannels)
         self._cstream.rxmapping[0:len(cmapping)] = cmapping
 
     def to_file(self, file, mode='w', **kwargs):
-        '''Open a SoundFile for writing based on stream characteristics
+        """Open a SoundFile for writing based on stream properties
 
         Parameters
         ----------
@@ -891,7 +927,7 @@ class _InputStreamMixin(object):
         --------
         :meth:`Stream.from_file`
 
-        '''
+        """
         # Try and determine the file extension here; we need to know if we
         # want to try and set a default subtype for the file
         fformat = kwargs.pop('format', None)
@@ -901,11 +937,12 @@ class _InputStreamMixin(object):
             except (AttributeError, IndexError):
                 fformat = None
 
-        channels = sum(m > 0 for m in self.rxmapping)
         try:
+            channels = self.channels[0]
             ssize = self.samplesize[0]
             dtype = self.dtype[0]
         except TypeError:
+            channels = self.channels
             ssize = self.samplesize
             dtype = self.dtype
 
@@ -931,7 +968,7 @@ class _InputStreamMixin(object):
         return _sf.SoundFile(file, mode, subtype=subtype, format=fformat, **kwargs)
 
     def set_sink(self, sink, buffersize=None, args=(), kwargs={}):
-        '''Set the recording sink for the audio stream
+        """Set the recording sink for the audio stream
 
         Parameters
         -----------
@@ -961,7 +998,7 @@ class _InputStreamMixin(object):
         --------
         :meth:`OutputStream.set_source`
 
-        '''
+        """
         try:
             channels = self.channels[0]
             elementsize = channels * self.samplesize[0]
@@ -975,7 +1012,7 @@ class _InputStreamMixin(object):
         reader = None
         if isinstance(sink, _sf.SoundFile):
             reader = self._soundfilerecorder
-            if sink.samplerate != self.samplerate or sink.channels != sum(m > 0 for m in self.rxmapping):
+            if sink.samplerate != self.samplerate or sink.channels != channels:
                 raise ValueError("Recording file samplerate/channels mismatch")
             args, kwargs = (sink,) + args, {}
         elif isinstance(sink, RingBuffer):
@@ -1012,9 +1049,13 @@ class _InputStreamMixin(object):
             Number of frames to record. Can be omitted if `out` is specified.
         offset : int, optional
             Number of frames to discard from beginning of recording.
+        atleast_2d : bool, optional
+            (numpy only) Always return output as a 2 dimensional array.
         buffersize : int, optional
             Buffer size to use for (double) buffering audio data to file. Only
             applicable when `out` is a file. Must be a power of 2.
+        blocking : bool, optional
+            Wait for recording to finish before returning.
         out : buffer or SoundFile, optional
             Output sink.
 
@@ -1025,7 +1066,7 @@ class _InputStreamMixin(object):
 
         See Also
         --------
-        :meth:`OutputStream.play`, :meth:`DuplexStream.playrec`
+        :meth:`InputStream.set_sink`, :meth:`DuplexStream.playrec`
 
         """
         try:
@@ -1091,8 +1132,7 @@ class _InputStreamMixin(object):
         offset : int, optional
             Recording offset. See :meth:`InputStream.record`.
         atleast_2d : bool, optional
-            Always return chunks as 2 dimensional arrays. Only valid when numpy
-            is used.
+            (numpy only) Always return chunks as 2 dimensional arrays.
         playback : buffer or SoundFile, optional
             Set playback audio. Only works for full duplex streams.
         loop : bool, optional
@@ -1175,7 +1215,7 @@ class _InputStreamMixin(object):
         elif playback is True:
             pass
         else:
-            self.set_source(playback, buffersize, loop)
+            self.set_source(playback, loop, buffersize)
 
         ndarray = False
         if out is not None:
@@ -1337,7 +1377,7 @@ class DuplexStream(InputStream, OutputStream):
 
     @classmethod
     def from_file(cls, playback, *args, **kwargs):
-        """Open a stream using the characteristics of a playback Soundfile
+        """Open a stream using the properties of a playback Soundfile
 
         Parameters
         ----------
@@ -1407,7 +1447,7 @@ class DuplexStream(InputStream, OutputStream):
         except ImportError:
             numpy = None
 
-        self.set_source(playback, buffersize, loop)
+        self.set_source(playback, loop, buffersize)
 
         # if playback is a file with no determined length we could get a
         # nonsensical value which may be negative or a huge number; thus we
@@ -1447,6 +1487,9 @@ def chunks(chunksize=None, overlap=0, frames=-1, pad=0, offset=0,
            atleast_2d=False, playback=None, loop=False, buffersize=None,
            out=None, **kwargs):
     """Read audio data in iterable chunks from a Portaudio stream.
+
+    This is simply a convenience function that provides the same functionality
+    as :meth:`InputStream.chunks`.
 
     Parameters
     ------------
@@ -1508,14 +1551,14 @@ def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False,
         stream.rxmapping = rxmapping
         stream.txmapping = txmapping
         record_fh = stream.to_file(record, subtype=isubtype, endian=iendian, format=iformat)
-        stream.set_source(playback_fh, buffersize, loop)
+        stream.set_source(playback_fh, loop, buffersize)
         stream.set_sink(record_fh, buffersize)
     elif playback is not None:
         kind = 'output'
         record_fh = None
         stream = OutputStream.from_file(playback_fh, **kwargs)
         stream.txmapping = txmapping
-        stream.set_source(playback_fh, buffersize, loop)
+        stream.set_source(playback_fh, loop, buffersize)
     elif record is not None:
         kind = 'input'
         playback_fh = None
@@ -1604,7 +1647,7 @@ def _get_parser(parser=None):
         return framestype(x)
 
     def nullortype(x, type=None):
-        if x.lower() in ('null', '', '{}', '[]'):
+        if x.lower() in ('null', '', '^'):
             return None
         return x if type is None else type(x)
 
@@ -1627,13 +1670,13 @@ def _get_parser(parser=None):
 
     parser.add_argument("input", type=nullortype, metavar='input|NULL',
         help='''\
-Playback audio file. Use dash (-) to read from STDIN. Use one of {null, {}} or
+Playback audio file. Use dash (-) to read from STDIN. Use one of {null, ^} or
 an empty string ('') to select record only.''')
 
     parser.add_argument("output", type=nullortype, metavar='output|NULL', nargs='?',
         help='''\
 Output file for recording. Use dash (-) to write to STDOUT. Use one of {null,
-{}} or an empty string ('') to select playback only.''')
+^} or an empty string ('') to select playback only.''')
 
     genopts = parser.add_argument_group("general options")
 
@@ -1655,7 +1698,7 @@ Note that size type arguments are accepted in the form hours:minutes:seconds by
 default or in samples directly by appending an 's' suffix lead by an optional
 size suffix: k[ilo] K[ibi] m[ega] M[ebi]. (e.g. 1Ks == 1024 samples).''')
 
-    propts.add_argument("--buffersize", type=possizetype, default=_PA_BUFFERSIZE, 
+    propts.add_argument("--buffersize", type=possizetype, default=_PA_BUFFERSIZE,
         help='''\
 File buffering size in units of frames. Must be a power of 2. Determines the
 maximum amount of buffering for the input/output file(s). Use higher values to
@@ -1675,14 +1718,6 @@ indefinitely.''')
     propts.add_argument("--loop", action='store_true',
         help="Loop playback indefinitely.")
 
-    propts.add_argument("-m", "--map", type=maptype, default=[], nargs='+',
-                        metavar='CHMAP', help='''\
-Input to output channel mapping assuming one-based indexing in the form
-CHIN[:CHOUT][,CHIN[:CHOUT]...]. If the output channel number is omitted the
-positional index is assumed. Note that each input/output channel may only be
-mapped once (i.e., mixing channels and channel duplication are not
-supported).''')
-
     propts.add_argument("-o", "--offset", type=posframestype, default=0,
         help='''\
 Drop a number of frames from the start of a recording.''')
@@ -1696,7 +1731,7 @@ duration is also negative, zero padding will be added indefinitely.''')
 
     devopts = parser.add_argument_group("audio device options",
                                         description='''\
-Options accept single values or pairs. One of {null, {}) or an empty string
+Options accept single values or pairs. One of {null, ^) or an empty string
 ('') may be used as a placeholder for the default value.''')
 
     devopts.add_argument("-b", "--blocksize", type=nonnegsizetype, help='''\
@@ -1719,6 +1754,14 @@ PortAudio default device(s).''')
 Sample format(s) of audio device stream. Must be one of {%s}.'''
 % ', '.join(['null'] + list(_sd._sampleformats.keys())))
 
+    devopts.add_argument("-m", "--map", type=lambda x: nullortype(x, maptype),
+                        default=[], nargs='+', metavar='CHMAP', help='''\
+Input to output channel mapping assuming one-based indexing in the form
+CHIN[:CHOUT][,CHIN[:CHOUT]...]. If the output channel number is omitted the
+positional index is assumed. Note that each input/output channel may only be
+mapped once (i.e., mixing channels and channel duplication are not
+supported).''')
+
     devopts.add_argument("-r", "--rate", dest='samplerate', type=possizetype,
         help='''\
 Sample rate in Hz. Add a 'k' suffix to specify kHz.''')
@@ -1732,7 +1775,7 @@ backend only.''')
 
     fileopts = parser.add_argument_group("audio file formatting options",
                                          description='''\
-Options accept single values or pairs. One of {null, {}} or an empty string
+Options accept single values or pairs. One of {null, ^} or an empty string
 ('') may be used as a placeholder for the default value.''')
 
     fileopts.add_argument("-t", "--file_type", metavar="file_type[,file_type]",
@@ -1783,8 +1826,8 @@ def _main(argv=None):
             args.channels = [cs and len(cs) for cs in args.channel_select]
         except IndexError:
             if args.output and len(args.channel_select) > 1:
-                args.channels = (args.channels[0], args.channel_select[1])
-        
+                args.channels = (args.channels[0], len(args.channel_select[1] or []) or None)
+
         settings = [cs and _sd.AsioSettings([x-1 for x in cs]) for cs in args.channel_select]
 
     txmapping, rxmapping = None, None
