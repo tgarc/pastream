@@ -1,6 +1,15 @@
 Release Notes
 =============
 
+0.2.0:
+
+  * (9223b) Fixed bug with loop mode which caused frame droppage
+  
+  * (5cd35) Added --channel-select for ASIO backend
+
+  * (110b6-b56ee) Add channel mapping settable through tx/rxmapping
+    properties. Also adds --map option to cli
+
 0.1.2:
 
   * (ba45a) improve file read/write efficiency
