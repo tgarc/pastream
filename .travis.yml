@@ -8,6 +8,11 @@ env:
     - CIBW_BEFORE_BUILD='{pip} install -r setup-requirements.txt'
     - CIBW_BEFORE_BUILD_LINUX='yum install -y libffi-devel && {pip} install -r setup-requirements.txt'
     # - CIBW_TEST_COMMAND='pytest {project}/tests/test_pastream.py'
+    - CIBW_BEFORE_BUILD_LINUX="PYVER=$({python} -c \"import sys; print('%s.%s' % sys.version_info[0:2])\")
+if [ '$PYVER' == '3.4' ] || [ '$PYVER' == '3.5' ]; then
+    curl -fsSLo /tmp/patch.tar.gz https://github.com/mayeut/patch-macos-python-openssl/releases/download/v0.1.0/patch-macos-python-$PYVER-openssl-v0.1.0.tar.gz
+    sudo tar -C /Library/Frameworks/Python.framework/Versions/$PYVER/ -xmf /tmp/patch.tar.gz
+fi"
 
 matrix:
   include:
@@ -25,6 +30,7 @@ matrix:
         - virtualenv env -p python
         - source env/bin/activate
         - curl https://bootstrap.pypa.io/get-pip.py | python
+
 script:
   - pip install twine cibuildwheel
   - cibuildwheel --output-dir wheelhouse
