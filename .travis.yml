@@ -17,14 +17,15 @@ matrix:
       services:
         - docker
     - os: osx
+      osx_image: xcode9.3
       language: generic
-      env: PKG_CONFIG_PATH="$PKG_CONFIG_PATH":/usr/local/opt/libffi/lib/pkgconfig
+      env:
+        - PKG_CONFIG_PATH="$PKG_CONFIG_PATH":/usr/local/opt/libffi/lib/pkgconfig
       before_install:
-        - brew update
         - brew install libffi
         - virtualenv env -p python
         - source env/bin/activate
-        - curl https://bootstrap.pypa.io/get-pip.py | python
+
 script:
   - pip install twine cibuildwheel
   - cibuildwheel --output-dir wheelhouse
