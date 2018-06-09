@@ -38,7 +38,7 @@ from pa_ringbuffer import _RingBufferBase
 ## from timeit import default_timer as timer
 ## gtime = None
 
-__version__ = '0.2.0'
+__version__ = '0.2.0.post0'
 
 
 # Set a default size for the audio callback ring buffer
@@ -1576,7 +1576,7 @@ def _FileStreamFactory(record=None, playback=None, buffersize=None, loop=False,
         v = locs[k]
         if v is None: continue
         if isinstance(v, str): # parse the format H:M:S to number of seconds
-            seconds = sum(x * (60.0 ** i) for i, x in enumerate(v.split(':')[::-1]))
+            seconds = sum(int(x) * (60.0 ** i) for i, x in enumerate(v.split(':')[::-1]))
             v = int(round(seconds * stream.samplerate))
         setattr(stream, '_' + k, v)
 
