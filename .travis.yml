@@ -6,16 +6,17 @@ env:
     - TWINE_USERNAME=tgarc
     - secure: "jK9hKnRawtZVNmx+mOZ0QYPYtpuC/34TDFwR2PQrqH98qGQkOkvHKAv5OAGcOqjpOVJ7dyiHW+SUMqN7ruyinmFvQIniW59xtg/7t4+SSZO4XnhyYCOjlbcuzNj0N6dueiFuJVnESGFlVdqdsTsldxD0TN4Pm1VTpqbC2J0OuAAmSaUn92Ybt9boxhOw/KupnDio0AUZEHnad3ctgw1Mt3faJkrHbdgRo1VNUjtDwQufMdSUwfyQ5FyQp4WOHnDldgGZIzjVYA4/0D6pXJ/XQzniiuT7lWR/s1vYJdgniZm+4mEV6/V99y6/ZKH/93iWIRWtR4D0XzIpJvALR8v6/A8frx7qaLo4Q04dwhGTzO6HtsOpOun+V0e2RW3UAHG51MjFF2bOy2ySiS9dlIVcWCMZsWJoa/D1NgSWiQdJmYPs2Q5RjwEoVpYVW9y7d0t0cep3811+WsHU92Mn/gryxaYYArxJI46n68dQoGqCub/11jAViZucbJVkThdGsLoRy/5CnB/2HyXPs6rBvJcza87bi4Nh3SyW4ZmHuk+i/6iKU46393AHQ4S0RXx0d3aLf94Cd9qafA++5nXeDMYnuDbPMB1cRLi3ur03afdJUUyuD8I1yAUKso4R6UhWKkNdmKIrwGZeYmHcqKnxZ3G/PRjRK4n/tnFqXma4MXzJaks="
     - CIBW_BEFORE_BUILD='{pip} install -r setup-requirements.txt'
-    - CIBW_BEFORE_BUILD_LINUX='yum install -y libffi-devel portaudio libsndfile && cp {project}/.asoundrc ~/ && modinfo snd-aloop && {pip} install -r setup-requirements.txt'
+    - CIBW_BEFORE_BUILD_LINUX='yum install -y libffi-devel && {pip} install -r setup-requirements.txt'
 
 matrix:
   include:
     - os: linux
       sudo: required
       language: python
-      env:
-        - CIBW_TEST_REQUIRES='pytest numpy'
-        - CIBW_TEST_COMMAND='pastream -l' #pytest {project}/tests/test_pastream.py'
+      # env:
+      #   - CIBW_BEFORE_BUILD='yum install -y libffi-devel portaudio libsndfile && cp {project}/.asoundrc ~/ && {pip} install -r setup-requirements.txt'
+      #   - CIBW_TEST_REQUIRES='pytest numpy'
+      #   - CIBW_TEST_COMMAND='pytest {project}/tests/test_pastream.py'
       services:
         - docker
     - os: osx
