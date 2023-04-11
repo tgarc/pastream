@@ -75,7 +75,7 @@ int callback(
             // strcpy(stream->errorMsg, "BufferEmpty");
             if (!stream->config.keepAlive) {
                 stream->stats.frame_count += oframes;
-                return paAbort;
+                return paComplete;
             }
         }
     }
@@ -93,7 +93,7 @@ int callback(
             // strcpy(stream->errorMsg, "BufferFull");
             if (!stream->config.keepAlive) {
                 stream->stats.frame_count += iframes;
-                return paAbort;
+                return paComplete;
             }
         }
     }

@@ -172,7 +172,16 @@ class Stream(_sd._StreamBase):
         _lib.reset_stream(self._cstream)
         super(Stream, self).start()
 
+    def reset(self):
+        assert not self.active
+        # Drop references to any buffers and external objects
+        self._cstream.txbuffer = _ffi.cast('PaUtilRingBuffer*', _ffi.NULL)
+        self._cstream.rxbuffer = _ffi.cast('PaUtilRingBuffer*', _ffi.NULL)
+        self._rxbuffer = self._txbuffer = None
+        _lib.reset_stream(self._cstream)
+
     def __enter__(self):
+        self.reset()
         return self
 
     def __exit__(self, exctype, excvalue, exctb):
@@ -180,9 +189,7 @@ class Stream(_sd._StreamBase):
 
     def close(self):
         super(Stream, self).close()
-
-        # Drop references to any buffers and external objects
-        self._rxbuffer = self._txbuffer = None
+        self.unset_buffers()
 
     def __repr__(self):
         try:
