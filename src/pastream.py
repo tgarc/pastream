@@ -22,10 +22,7 @@
 """pastream: GIL-less Portaudio Streams for Python
 """
 from __future__ import print_function as _print_function, division as _division
-try:                import Queue as _queue
-except ImportError: import queue as _queue
 import math as _math
-import threading as _threading
 import time as _time
 import sys as _sys
 import sounddevice as _sd
@@ -40,19 +37,6 @@ from pa_ringbuffer import _RingBufferBase
 
 __version__ = '0.2.0.post0'
 
-
-# Set a default size for the audio callback ring buffer
-_PA_BUFFERSIZE = 1 << 16
-
-# Determines the blocksize for reading/writing sound files
-_FILECHUNKSIZE = 4096
-_MAXCHUNKSIZE = 1 << 18
-
-# Private states that determine how a stream completed
-_FINISHED = 1
-_ABORTED = 2
-_STOPPED = 4
-_INITIALIZED = 8
 
 # Include xrun flags in nampespace
 paInputOverflow = _lib.paInputOverflow
@@ -156,12 +140,12 @@ class Stream(_sd._StreamBase):
         ## self._rmisses = self._wmisses = 0
 
         if kind == 'duplex':
-            self._cstream.txElementSize = self.samplesize[1] * self.channels[1]
-            self._cstream.rxElementSize = self.samplesize[0] * self.channels[0]
+            self._cstream.config.txElementSize = self.samplesize[1] * self.channels[1]
+            self._cstream.config.rxElementSize = self.samplesize[0] * self.channels[0]
         elif kind == 'output':
-            self._cstream.txElementSize = self.samplesize * self.channels
+            self._cstream.config.txElementSize = self.samplesize * self.channels
         else: #if kind == 'input':
-            self._cstream.rxElementSize = self.samplesize * self.channels
+            self._cstream.config.rxElementSize = self.samplesize * self.channels
 
     @property
     def isduplex(self):
@@ -169,30 +153,24 @@ class Stream(_sd._StreamBase):
         return hasattr(self.channels, '__len__')
 
     @property
-    def status(self):
-        """\
-        The current PaStreamCallbackFlags status of the portaudio
-        stream.
-        """
-        return self._cstream.status
-
-    @property
     def xruns(self):
         """Running total of xruns.
         Each new starting of the stream resets this number to zero.
         """
-        return self._cstream.xruns
+        return self._cstream.stats.xruns
 
     @property
     def frame_count(self):
         """Running total of frames that have been processed.
         Each new starting of the stream resets this number to zero.
         """
-        return self._cstream.frame_count
-
-    def _prepare(self):
-        # Reset cstream info
+        return self._cstream.stats.frame_count
+        
+    def start(self):
+        # Ensure that previous stream is done
+        self.abort()
         _lib.reset_stream(self._cstream)
+        super(Stream, self).start()
 
     def __enter__(self):
         return self

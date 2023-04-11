@@ -51,7 +51,7 @@ int callback(
         // loop mode: this assumes that the buffer is only written before
         // stream is started (and never while its active), so we can safely
         // rewind when we hit the end
-        while ( oframes < oframes_left && stream->loop ) {
+        while ( oframes < oframes_left && stream->config.loop ) {
             tempframes = stream->txbuffer->readIndex;
 
             // just in case frames == 0 or by some mistake the txbuffer is empty
