@@ -1,12 +1,6 @@
 .. image:: https://badge.fury.io/py/pastream.svg
     :target: https://badge.fury.io/py/pastream
 
-.. image:: https://travis-ci.org/tgarc/pastream.svg?branch=master
-    :target: https://travis-ci.org/tgarc/pastream
-
-.. image:: https://ci.appveyor.com/api/projects/status/wk52r5jy9ri7dsi9/branch/master?svg=true
-    :target: https://ci.appveyor.com/project/tgarc/pastream/branch/master
-
 
 GIL-less Portaudio Streams for Python
 =====================================
@@ -36,7 +30,7 @@ GIL-less Audio Callbacks
 Input Stream iterators
     Efficiently retrieve live audio capture data through an iterable. As simple as:
 
-    .. code-block:: python
+    .. code:: python
 
        import pastream as ps
        for chunk in ps.chunks():
@@ -132,7 +126,7 @@ Examples
 ========
 Record one second of audio to memory, then play it back:
 
-.. code-block:: python
+.. code:: python
 
    import pastream as ps
 
@@ -144,7 +138,7 @@ Record one second of audio to memory, then play it back:
 Playback 10 seconds of a file, adding zero padding if the file is shorter, and
 record the result to memory:
 
-.. code-block:: python
+.. code:: python
 
    import pastream as ps, soundfile as sf
 
@@ -153,7 +147,7 @@ record the result to memory:
 
 Grab (real) frequency transformed live audio stream with 50% overlap:
 
-.. code-block:: python
+.. code:: python
 
    import pastream as ps, numpy as np
 
@@ -164,7 +158,7 @@ Grab (real) frequency transformed live audio stream with 50% overlap:
 
 Generate a pure tone on-the-fly
 
-.. code-block:: python
+.. code:: python
 
    import time
    import pastream as ps

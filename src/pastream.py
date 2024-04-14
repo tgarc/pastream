@@ -38,7 +38,7 @@ from pa_ringbuffer import _RingBufferBase
 ## from timeit import default_timer as timer
 ## gtime = None
 
-__version__ = '0.2.0.post0'
+__version__ = '0.2.0.post1'
 
 
 # Set a default size for the audio callback ring buffer
