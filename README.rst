@@ -1,12 +1,6 @@
 .. image:: https://badge.fury.io/py/pastream.svg
     :target: https://badge.fury.io/py/pastream
 
-.. image:: https://travis-ci.org/tgarc/pastream.svg?branch=master
-    :target: https://travis-ci.org/tgarc/pastream
-
-.. image:: https://ci.appveyor.com/api/projects/status/wk52r5jy9ri7dsi9/branch/master?svg=true
-    :target: https://ci.appveyor.com/project/tgarc/pastream/branch/master
-
 
 GIL-less Portaudio Streams for Python
 =====================================
