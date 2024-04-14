@@ -25,12 +25,7 @@ setup(name='pastream',
       entry_points={'console_scripts': ['pastream = pastream:_main']},
       cffi_modules=["build_pastream.py:ffibuilder"],
       setup_requires=open(os.path.join(dirname, 'setup-requirements.txt')).readlines(),
-      install_requires=[
-          'pa_ringbuffer>=0.1.2',
-          'cffi>=1.0.0',
-          'soundfile>=0.9.0',
-          'sounddevice>=0.3.9',
-      ],
+      install_requires=open(os.path.join(dirname, 'requirements.txt')).readlines(),
       tests_require=open(os.path.join(dirname, 'tests', 'requirements.txt')).readlines(),
       extras_require={
           'numpy': 'numpy',
