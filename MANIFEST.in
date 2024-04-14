@@ -4,7 +4,7 @@ include README.rst
 include src/*.c src/*.h
 include build_pastream.py
 include portaudio/include/portaudio.h portaudio/src/common/pa_ringbuffer.h portaudio/src/common/pa_memorybarrier.h
-include setup-requirements.txt dev-requirements.txt
+include requirements.txt setup-requirements.txt dev-requirements.txt
 include docs/requirements.txt docs/*.rst docs/Makefile docs/make.bat docs/*.py
 include etc/README.rst
 include examples/requirements.txt examples/README.rst
